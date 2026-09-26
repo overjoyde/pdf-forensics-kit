@@ -1,139 +1,374 @@
 # pdf-forensics-kit
 
-Explainable, signature-aware tampering and provenance analysis for **PDF and Office documents
-(DOCX / XLSX / PPTX)**. It is a rewrite inspired by
-[`Rlahuerta/pdf-forensics-toolkit`](https://github.com/Rlahuerta/pdf-forensics-toolkit) (MIT).
+[![CI](https://github.com/overjoyde/pdf-forensics-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/overjoyde/pdf-forensics-kit/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%E2%80%933.14-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-- [`docs/ANALYSIS.md`](docs/ANALYSIS.md): what was kept, the defects found upstream, and what changed.
-- [`docs/VALIDATION.md`](docs/VALIDATION.md): results on public PDF and Office samples.
-- [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md): evidence handling, the findings model, and stronger verification sources.
+**Find out whether a PDF or Office document has been changed, what was changed, and whether it hides
+anything. Every conclusion is explained and backed by evidence, with no black-box score.**
 
-**What it answers**
+`pdfforensics` is a local command-line tool for fraud investigators, compliance and AML analysts, auditors,
+and anyone who receives invoices, statements, contracts or certificates and needs to decide whether to
+trust them. Point it at a file or a folder and you get:
 
-- Was the document changed after it was created, and *what* changed? It recovers earlier revisions and diffs their text.
-- Was it changed **after it was signed**? Is the signature cryptographically intact?
-- Does it hide content: invisible text, print-only annotations, layers hidden by default, appended data?
-- Does it contain active content (JavaScript, launch/submit actions, attachments, XFA)?
-- Which software pipeline produced it, and do documents that claim the same source match?
-- For Word/Excel/PowerPoint: are there pending tracked changes, with the **deleted text still in the file**? Is
-  there hidden text, are there hidden or very-hidden sheets or hidden slides? Does it contain macros, DDE fields,
-  remote templates, external content or embedded objects? Is the package disguised or malformed?
+- a **verdict** (from `no-indicators` to `strong-indicators`),
+- a **plain-language summary** of what was found, what was ruled out and what to do next,
+- **evidence you can show others**, such as the text removed and added between an earlier version and the current one,
+- the **earlier versions themselves**, recovered as separate PDFs when the file still contains them.
 
-Every result is a **finding** with severity, confidence, evidence and possible benign explanations.
-The verdict rule is printed in every report. There are no hidden point totals.
+Everything runs offline on your machine. The document is never uploaded, modified or executed.
 
-> Structural analysis only. It cannot prove that content is true, and a clean result is not proof of authenticity.
+> **What it is not:** structural analysis cannot prove that the *content* of a document is true, and a
+> clean result is not proof of authenticity. The tool tells you where to look and how strong the signal is.
+> For a final answer, see [How to read the results](#how-to-read-the-results).
 
-## Install (local, isolated)
+---
+
+## Contents
+
+- [See it in action](#see-it-in-action)
+- [What it checks](#what-it-checks)
+- [What you get](#what-you-get)
+- [Install](#install)
+- [Usage](#usage)
+- [How to read the results](#how-to-read-the-results)
+- [Safety and privacy](#safety-and-privacy)
+- [Supported formats and limitations](#supported-formats-and-limitations)
+- [Finding reference](#finding-reference)
+- [Documentation, development and credits](#documentation-development-and-credits)
+
+---
+
+## See it in action
+
+A case folder contains three documents: a signed invoice, a Word offer and a bank statement.
+
+```bash
+pdfforensics analyze ./case-123 --out-dir ./case-123-reports
+```
+
+**`batch-summary.md`** (excerpt):
+
+> **3 document(s) submitted: 2 need attention, 1 without significant findings.**
+>
+> **Needs attention (most severe first)**
+> - invoice.pdf: `strong-indicators` - Revision 3 changes page content after the document was signed
+> - offer.docx: `review-recommended` - Tracked changes still stored in the document (1 insertion(s), 1 deletion(s))
+
+**`invoice.pdf.4f716821876d.summary.md`** (excerpt):
+
+> **invoice.pdf: strong-indicators - 3 finding(s) need attention (1 critical, 1 high, 1 medium).**
+>
+> 1-page PDF 1.3 produced by Acme Billing 4.2; pyHanko 0.37.0; 2 later edit(s) appended to the file; 1 signature(s), 1 with
+> the signed bytes verified intact, but data was added after the last signature.
+>
+> **Key findings**
+> - [CRITICAL] Revision 3 changes page content after the document was signed: removed: "Total: 100 SEK"; added: "Total: 9 SEK"
+> - [HIGH] Changes after signature 'Sig1' go beyond what the signer allowed: pyHanko: INTACT:UNTRUSTED,EXTENDED_WITH_OTHER,ILLEGAL_MODIFICATIONS
+> - [MEDIUM] 324 byte(s) were appended after the last signature: signed up to byte 6,244 of 6,568
+>
+> **Checked and found in order**
+> - No hidden text, print-only annotations or hidden layers.
+> - No JavaScript, launch actions, form submission or suspicious attachments.
+>
+> **Recommended next steps**
+> 1. Extract the earlier revision(s) with `pdfforensics extract-revisions` and compare them with the current version. Ask the issuer for the original document.
+> 2. …
+
+**`offer.docx`**: the Word document looks clean on screen, but its tracked changes still hold the original amount:
+
+> - [MEDIUM] Tracked changes still stored in the document: deleted: "100 SEK"; inserted: "900 SEK"; by Mallory
+
+Recover the version that was signed, and prove the difference:
+
+```text
+$ pdfforensics extract-revisions invoice.pdf --out-dir revs
+revs/invoice.rev01-of-03.pdf  (896 bytes)
+revs/invoice.rev02-of-03.pdf  (6,244 bytes)     <- the signed version
+revs/invoice.rev03-of-03.pdf  (6,568 bytes)     <- what you received
+
+$ pdfforensics compare revs/invoice.rev02-of-03.pdf invoice.pdf
+- page 1 only in A: `Total: 100 SEK`
+- page 1 only in B: `Total: 9 SEK`
+```
+
+*(The example documents are synthetic. They are generated by the test suite.)*
+
+---
+
+## What it checks
+
+### PDF
+
+| Question | How it is answered |
+|---|---|
+| **Was the file edited after it was created, and what changed?** | Walks the PDF's internal revision chain. Every earlier version stored inside the file is rebuilt, and the tool lists which objects changed (page content, annotations, form fields, metadata) and **diffs the visible text** between versions. |
+| **Was it changed after it was signed? Is the signature genuine?** | Maps each signature's signed byte range to the revisions. It flags content changed after signing, validates the signature cryptographically with **pyHanko**, and optionally cross-checks with Poppler **`pdfsig`** (integrity, certificate trust and revocation reported separately). A signature on its own is *not* treated as tampering. |
+| **Does it show different things to different readers?** | Invisible text (with a check that tells OCR'd scans apart from hidden text), annotations that appear only when printed, hidden annotations, layers that are off by default or differ between screen and print. |
+| **Do the metadata make sense?** | Modification before creation, dates in the future, Info-dictionary vs XMP disagreements (timezone-aware), producer changes, XMP edit history, and consumer or online PDF editors (iLovePDF, Smallpdf, Sejda, …) in the tool chain. |
+| **Is the file structure sound?** | Data before the header or after the end of the file, repairs needed to open it, leftover unreferenced content, broken revision chains, encryption. |
+| **Is it dangerous to open?** | JavaScript, launch actions, form submission or data import, embedded files (e-invoice XML recognised as benign), XFA forms, multimedia, external links. |
+| **Where does it come from?** | A production fingerprint (software, PDF version, internal structure, fonts). Documents that claim the same issuer but were built differently stand out in a batch. |
+
+### Word, Excel and PowerPoint (DOCX / XLSX / PPTX, including macro-enabled variants)
+
+| Question | How it is answered |
+|---|---|
+| **Was the wording or an amount changed?** | Unaccepted **tracked changes**, including the **deleted text still stored in the file**, the inserted text and the author names. |
+| **Is something hidden?** | Hidden Word text, **hidden and very-hidden Excel sheets** (very-hidden sheets cannot be unhidden from the Excel interface), hidden slides, comments. |
+| **Do the document properties add up?** | Modified before created, printed before created, dates in the future, author vs last editor, many saves with zero editing time. |
+| **Is it dangerous to open?** | Macros (VBA / Excel 4), with an extra flag when a macro-free `.docx`/`.xlsx` contains them. Also DDE fields, **remote-template injection**, content loaded from outside the file, embedded and ActiveX objects. |
+| **Is the file what it claims to be?** | Extension vs actual content, a ZIP disguised as an Office file, duplicate internal parts, path-traversal entries, decompression bombs, inconsistent package manifests. |
+
+For all formats, the file extension is checked against the real content (for example a PDF renamed to `.docx`).
+
+---
+
+## What you get
+
+### Output files
+
+With `--out-dir`, each document produces three files, named after the file **and the first 12 characters of
+its SHA-256**. Same-named files from different folders therefore never overwrite each other:
+
+| File | For whom | Content |
+|---|---|---|
+| `invoice.pdf.4f716821876d.summary.md` | Case handlers, managers | One-page plain-language summary: headline, document profile, key findings with their evidence, what was ruled out, next steps, limitations |
+| `invoice.pdf.4f716821876d.forensics.md` | Reviewers | Full report: file identity and hash, tool versions, summary, then every finding with explanation, evidence and benign explanations, and the verdict rule |
+| `invoice.pdf.4f716821876d.forensics.json` | Systems, archiving, re-analysis | Everything, machine-readable (see below) |
+| `batch-summary.md` | Everyone (when several files are analysed) | Executive summary, documents needing attention first, a table of all documents, and grouping by production pipeline |
+
+Without `--out-dir`, the Markdown report is printed to the terminal. `--summary` prints only the summary,
+and `--json -` prints JSON.
+
+### The verdict
+
+| Level | Label | Meaning |
+|---|---|---|
+| info | `no-indicators` | Nothing found in the checks performed |
+| low | `minor-anomalies` | Anomalies that are usually benign; review them if the document matters |
+| medium | `review-recommended` | Needs an explanation before you rely on the document |
+| high | `significant-indicators` | Post-creation modification or hidden content |
+| critical | `strong-indicators` | For example, content changed after signing or a broken signature |
+
+**The rule is simple and printed in every report.** Each finding has a severity and a confidence. A
+low-confidence finding counts one level lower, and the verdict is the highest level that remains. If any
+check failed or a format is only partly supported, the verdict is marked **incomplete**. A failed check
+never counts as "clean".
+
+### Anatomy of a finding
+
+Every finding answers *what*, *how sure* and *what else could explain it*:
+
+```json
+{
+  "id": "revisions.content-changed",
+  "title": "Revision 3 changes page content after the document was signed",
+  "severity": "critical",
+  "confidence": "high",
+  "category": "revisions",
+  "explanation": "An incremental update replaced or added page content streams ... The earlier version is still inside the file and can be extracted with 'pdfforensics extract-revisions'.",
+  "evidence": {
+    "revision": 3,
+    "objects_changed": 1,
+    "changed_roles": { "content": 1 },
+    "text_removed": [ { "page": 1, "text": "Total: 100 SEK" } ],
+    "text_added":   [ { "page": 1, "text": "Total: 9 SEK" } ]
+  },
+  "benign_explanations": [
+    "Legitimate re-save by an editor after corrections",
+    "Page added by an approved workflow (e.g. appended cover sheet)"
+  ]
+}
+```
+
+### The JSON report
+
+| Key | Content |
+|---|---|
+| `file` | Name, absolute path, format (`pdf` / `ooxml` / `ole`), kind (`pdf`/`docx`/`xlsx`/`pptx`), size, **SHA-256**, MD5, analysis time (UTC) |
+| `tool` | Tool version and the versions of pikepdf, qpdf, pypdf, pyHanko and pdfsig, plus platform and whether external tools and network access were enabled |
+| `verdict` | Level, label, meaning, completeness, counts per severity, top findings, the rule, the disclaimer |
+| `summary` | The plain-language summary as structured data (headline, document profile, key findings, ruled out, recommended actions, limitations) |
+| `findings` | All findings, most severe first |
+| `facts` | Raw observations per analyser: revisions and per-revision diffs, signatures, metadata, page statistics, active content, Office properties, fingerprint |
+| `errors` | Checks that could not run, and why |
+
+Saved JSON can be re-summarised at any time: `pdfforensics summarize *.forensics.json`. It reproduces
+the summary exactly.
+
+### Exit codes
+
+`0` success · `1` a verdict reached the `--fail-on` level · `2` input error (not found, unsupported, unreadable)
+
+---
+
+## Install
+
+Requires Python 3.10 or later.
 
 ```bash
 git clone https://github.com/overjoyde/pdf-forensics-kit.git
 cd pdf-forensics-kit
 python3 -m venv .venv
-.venv/bin/pip install -e '.[signatures,dev]'   # drop 'signatures' to skip pyHanko
+.venv/bin/pip install -e '.[signatures]'      # add ,dev for the test suite
+.venv/bin/pdfforensics --version
 ```
 
-Runtime dependencies: `pikepdf` (MPL-2.0), `pypdf` (BSD), and optionally `pyhanko` (MIT). There is no AGPL code and nothing phones home.
-Office analysis uses only the Python standard library.
+| Component | Required? | Purpose | Licence |
+|---|---|---|---|
+| `pikepdf` (qpdf) | yes | Low-level PDF structure | MPL-2.0 |
+| `pypdf` | yes | Text of each PDF revision | BSD |
+| `pyhanko` | optional (`[signatures]`) | Cryptographic PDF signature validation | MIT |
+| Poppler `pdfsig` | optional (`brew install poppler` / `apt install poppler-utils`) | Second signature validator: trust and revocation | GPL (separate program, called as a tool) |
 
-**Optional second signature validator:** if Poppler's `pdfsig` is installed (`brew install poppler`, or
-`apt install poppler-utils`), signed PDFs are also checked by it. Signature integrity, certificate trust and
-revocation are reported separately, and the result is cross-checked against pyHanko. `pdfsig` runs offline
-(`-no-ocsp`) unless you pass `--online-revocation`. Disable it with `--no-external-tools`.
+Office analysis uses only the Python standard library. There is no AGPL code and nothing phones home.
 
-## Use
+---
+
+## Usage
 
 ```bash
-# one file -> Markdown on stdout
-.venv/bin/pdfforensics analyze invoice.pdf
+# One file: full Markdown report in the terminal
+pdfforensics analyze invoice.pdf
 
-# a folder of PDFs / DOCX / XLSX / PPTX -> JSON + Markdown + summary per file, plus a batch summary
-.venv/bin/pdfforensics analyze ./case-123 -r --out-dir ./case-123-reports
+# Just the plain-language summary (terminal, or write it to a file)
+pdfforensics analyze invoice.pdf --summary
+pdfforensics analyze offer.docx --summary offer-summary.md
 
-# plain-language summary when the analysis is done (stdout, or a file)
-.venv/bin/pdfforensics analyze ./case-123 --summary
-.venv/bin/pdfforensics analyze invoice.pdf --summary invoice.summary.md
+# A whole case folder (recursively): per-file JSON + report + summary, plus a batch summary
+pdfforensics analyze ./case-123 -r --out-dir ./case-123-reports
 
-# regenerate summaries later from saved JSON reports
-.venv/bin/pdfforensics summarize ./case-123-reports/*.forensics.json -o case-123-summary.md
+# Recover every earlier version of a PDF as a standalone file
+pdfforensics extract-revisions invoice.pdf --out-dir ./revisions
 
-# CI / scripting: exit 1 if any document is at or above a level
-.venv/bin/pdfforensics analyze doc.pdf --json - --fail-on high
+# Compare a questioned copy with a reference copy (identity, metadata, production, text)
+pdfforensics compare reference.pdf questioned.pdf
 
-# write every revision as a standalone PDF (open rev01 to see the original)
-.venv/bin/pdfforensics extract-revisions invoice.pdf --out-dir ./revisions
+# Rebuild summaries later from saved JSON reports
+pdfforensics summarize ./case-123-reports/*.forensics.json -o case-123-summary.md
 
-# compare two documents (identity, metadata, pipeline, page text)
-.venv/bin/pdfforensics compare claimed.pdf reference.pdf
+# Automation: JSON on stdout, exit code 1 if anything is 'high' or worse
+pdfforensics analyze ./inbox --json - --fail-on high
 ```
 
-Inputs are never modified. The file is captured once without following symlinks, hashed, and analysed
-from those bytes; a file that changes while it is read is rejected. Reports contain SHA-256, size, UTC
-timestamp and all library/tool versions, and are named `<file>.<sha256-prefix>.forensics.{json,md}` and
-`.summary.md`, so same-named files never overwrite each other.
-
-### Summary
-
-Every analysis ends with a generated **summary** (the `summary` key in JSON, the `## Summary` section in Markdown,
-and `<name>.summary.md` with `--out-dir`). It is written for non-technical readers:
-
-- **Headline:** verdict and how many findings need attention, by severity.
-- **Document profile:** pages, producing software, appended edits, signature status.
-- **Key findings:** each with its decisive evidence (e.g. `removed: "Total: 100 SEK"; added: "Total: 9 SEK"`) and the most likely benign explanation.
-- **Checked and found in order:** what the checks ruled out.
-- **Recommended next steps** for the findings present.
-- **Limitations:** incomplete analysis, unverifiable signatures, scan limits, and the general disclaimer.
-
-For several files, an executive summary lists the documents needing attention, most severe first.
-The summary is a pure function of the report, so `pdfforensics summarize` reproduces it exactly from saved JSON.
-
-## Verdict levels
-
-| Level | Label | Meaning |
-|---|---|---|
-| info | `no-indicators` | Nothing found in the checks performed |
-| low | `minor-anomalies` | Usually benign; review if the document matters |
-| medium | `review-recommended` | Needs an explanation before relying on the document |
-| high | `significant-indicators` | Post-creation modification or hidden content |
-| critical | `strong-indicators` | e.g. content changed after signing, broken signature |
-
-Rule: effective severity = severity, one step lower when confidence is low. Verdict = highest effective severity. A failed analyser marks the report **incomplete**. It never counts as clean.
-
-## Checks
-
-| Analyser | Findings (ids) |
+| Option | Effect |
 |---|---|
-| structure | `data-before-header`, `data-after-eof`, `extra-eof-markers`, `repaired`, `unreachable-objects`, `encrypted`, `xref-chain-broken` |
-| revisions | `content-changed` (with text diff), `annotation-or-form-update`, `metadata-update`, `signature-update`, `other-update` |
-| signatures | `intact`, `broken`, `disallowed-modification`, `bytes-after-last-signature`, `malformed-byterange`, `validation-error` |
-| metadata | `modified-before-created`, `future-date`, `info-xmp-date-mismatch`, `producer-mismatch`, `editor-tool`, `manipulation-library`, `xmp-history`, `absent` |
-| content | `invisible-text`, `ocr-text-layer`, `print-only-annotations`, `hidden-annotations`, `layer-view-print-differs`, `layers-hidden-by-default` |
-| active_content | `javascript`, `launch-action`, `submit-or-import`, `remote-goto`, `multimedia`, `xfa`, `embedded-files`, `e-invoice-attachment`, `additional-actions`, `uris` |
-| pdfsig (optional) | `integrity-ok`, `integrity-failure`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
-| fingerprint | facts only: producer family, pipeline hash, fonts, filters, xref style |
+| `-r, --recursive` | Include sub-folders |
+| `--out-dir DIR` | Write JSON, report and summary per file (plus `batch-summary.md`) |
+| `--json FILE` / `--markdown FILE` | Write the JSON or Markdown report (`-` for stdout) |
+| `--summary [FILE]` | Output only the plain-language summary |
+| `--hide-info` | Leave info-level findings out of the Markdown |
+| `--fail-on LEVEL` | Exit with 1 if any verdict is at or above `low`/`medium`/`high`/`critical` |
+| `--password PW` | User password for encrypted PDFs |
+| `--no-external-tools` | Do not run Poppler `pdfsig`, even if installed |
+| `--online-revocation` | Let `pdfsig` contact OCSP servers to check revocation (**network access**, off by default) |
+| `--max-pages`, `--max-objects`, `--max-revisions` | Scan limits for very large files. Hitting a limit is reported, never hidden |
+
+The analysis is also available from Python: `from pdfforensics import analyze_file; analyze_file("x.pdf").to_dict()`.
+
+---
+
+## How to read the results
+
+**Commonly benign**, so do not treat these as red flags on their own:
+- CreationDate differs from ModDate.
+- Incremental updates that only add a signature, form values or long-term-validation data.
+- Invisible OCR text over a scanned image.
+- Author differs from last editor.
+- Tracked changes in a document that is still under review.
+- Hidden helper sheets in spreadsheet templates.
+- Unused fonts left behind by generators.
+
+**High-signal findings**, which deserve follow-up:
+- `revisions.content-changed` with text evidence: the earlier version is recoverable.
+- Content changed after signing, `signature.broken`, `pdfsig.integrity-failure`.
+- `office.tracked-changes` with deleted text: the original wording or amount is still in the file.
+- `metadata.editor-tool` on a document that supposedly came straight from a bank, insurer or ERP system.
+- `signature.validators-disagree`: the two validators give different answers, so get manual expert review.
+
+**Settling the question.** Structural analysis is the weakest of the usual sources of evidence. When a
+document matters, go up this list (the summary suggests it automatically):
+
+1. A valid digital signature from a trusted certificate, covering the relevant version
+2. A known-good hash from the issuing system or an immutable archive
+3. The source system's audit log or version history
+4. An independently obtained copy from the issuer
+5. This tool's structural findings
+
+Never report `no-indicators` as "authentic" or "not tampered". It means the checks found nothing.
+
+---
+
+## Safety and privacy
+
+- **Read-only, captured once.** The file is read once without following symbolic links, then hashed and
+  analysed from those bytes. A file that changes while it is read is rejected, and a file that changes
+  during analysis is reported.
+- **Offline.** No uploads and no telemetry. `pdfsig` runs with `-no-ocsp` unless you pass `--online-revocation`.
+- **Nothing is executed or fetched.** Macros, JavaScript, DDE fields, embedded files and external links are only inspected.
+- **Hostile-file hardening.** Size limits, bounded ZIP/XML parsing, XML entity declarations refused, and
+  external tools given a private temporary copy with no shell.
+- **Reports are sensitive.** They quote metadata and changed text, so give them the same classification
+  and handling as the documents themselves.
+
+---
+
+## Supported formats and limitations
+
+| Format | Support |
+|---|---|
+| PDF (all versions, classic/stream/hybrid xref, linearized, encrypted with password) | Full |
+| DOCX, DOCM, DOTX, DOTM | Full (Word checks) |
+| XLSX, XLSM, XLTX, XLTM | Full (Excel checks) |
+| PPTX, PPTM, POTX, PPSX … | Full (PowerPoint checks) |
+| Legacy `.doc` / `.xls` / `.ppt` (OLE2) | Recognised only; the report is marked incomplete (use `oletools`) |
+| Images, e-mail, other ZIPs | Not supported (rejected with a clear message) |
+
+Known limits:
+- Office XML signatures are detected but not validated cryptographically.
+- There is no image forensics (e.g. error-level analysis) and no font-glyph analysis.
+- Signature trust depends on the certificates configured for pyHanko or Poppler.
+- It cannot judge whether the content is true.
+
+---
+
+## Finding reference
+
+<details>
+<summary>All finding ids by analyser (click to expand)</summary>
+
+| Analyser | Findings |
+|---|---|
 | input (all formats) | `extension-mismatch`, `changed-after-capture` |
-| office container | `not-an-office-package`, `extension-mismatch`, `duplicate-parts`, `unsafe-paths`, `encrypted-parts`, `compression-bomb`, `resource-limit`, `opc-nonconformant`, `parts-not-parsed`, `legacy-format` |
-| office metadata | `modified-before-created`, `printed-before-created`, `future-date`, `different-editor`, `zero-edit-time`, `remote-template-name`, `metadata-absent` |
-| office content | `tracked-changes` (with deleted/inserted text and authors), `track-changes-enabled`, `hidden-text`, `very-hidden-sheets`, `hidden-sheets`, `external-workbook-links`, `hidden-slides`, `comments` |
-| office active content | `macros` (flags macros in macro-free extensions), `remote-template`, `dde-field`, `external-content`, `embedded-objects`, `activex`, `hyperlinks`, `xml-signature` (detected, not validated) |
+| PDF structure | `data-before-header`, `data-after-eof`, `extra-eof-markers`, `repaired`, `unreachable-objects`, `encrypted`, `xref-chain-broken` |
+| PDF revisions | `content-changed` (with text diff), `annotation-or-form-update`, `metadata-update`, `signature-update`, `other-update` |
+| PDF signatures (pyHanko) | `intact`, `broken`, `disallowed-modification`, `bytes-after-last-signature`, `malformed-byterange`, `usage-rights`, `not-validated`, `validation-error` |
+| PDF signatures (pdfsig, optional) | `integrity-ok`, `integrity-failure`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
+| PDF metadata | `modified-before-created`, `future-date`, `info-xmp-date-mismatch`, `producer-mismatch`, `editor-tool`, `manipulation-library`, `xmp-history`, `absent` |
+| PDF content | `invisible-text`, `ocr-text-layer`, `print-only-annotations`, `hidden-annotations`, `layer-view-print-differs`, `layers-hidden-by-default` |
+| PDF active content | `javascript`, `launch-action`, `submit-or-import`, `remote-goto`, `multimedia`, `xfa`, `embedded-files`, `e-invoice-attachment`, `additional-actions`, `uris` |
+| Office container | `not-an-office-package`, `extension-mismatch`, `duplicate-parts`, `unsafe-paths`, `encrypted-parts`, `compression-bomb`, `resource-limit`, `opc-nonconformant`, `parts-not-parsed`, `legacy-format` |
+| Office metadata | `modified-before-created`, `printed-before-created`, `future-date`, `different-editor`, `zero-edit-time`, `remote-template-name`, `metadata-absent` |
+| Office content | `tracked-changes`, `track-changes-enabled`, `hidden-text`, `very-hidden-sheets`, `hidden-sheets`, `external-workbook-links`, `hidden-slides`, `comments` |
+| Office active content | `macros`, `remote-template`, `dde-field`, `external-content`, `embedded-objects`, `activex`, `hyperlinks`, `xml-signature` |
+| fingerprint | Facts only: producer family, pipeline hash, fonts, filters, xref style / application, version, company, template |
 
-## Tests
+</details>
 
-```bash
-.venv/bin/python -m pytest
-```
+---
 
-All fixtures are generated synthetically at test time (`tests/pdfgen.py`, `tests/officegen.py`),
-including a signed document built with a throw-away self-signed certificate. The repository contains no
-real documents. The `pdfsig` integration tests run only when Poppler is installed.
+## Documentation, development and credits
 
-## Agent skill
+- [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md): evidence handling, the findings model, what is normal, stronger verification sources.
+- [`docs/VALIDATION.md`](docs/VALIDATION.md): results on public PDF and Office samples, and the defects found and fixed along the way.
+- [`docs/ANALYSIS.md`](docs/ANALYSIS.md): review of the upstream project and why this is a rewrite.
+- **Agent skill:** [`.agents/skills/document-forensics/`](.agents/skills/document-forensics/SKILL.md) teaches coding agents (Codex, opencode, …) to run the tool safely and report without over-interpreting.
 
-`.agents/skills/document-forensics/` contains a skill for coding agents (Codex, opencode and similar).
-It covers how to run the CLI safely, and how to report results without over-interpreting them: a
-`no-indicators` result is never "authentic".
+**Tests.** `.venv/bin/pip install -e '.[signatures,dev]' && .venv/bin/python -m pytest`. All fixtures
+are generated synthetically at test time (`tests/pdfgen.py`, `tests/officegen.py`), including a signed
+PDF made with a throw-away certificate. The repository contains no real documents. CI runs on Linux,
+macOS and Windows, with and without pyHanko, and with Poppler on Linux.
 
-## Handling sensitive documents
-
-The tool runs fully offline and never uploads anything. Reports quote metadata and changed text,
-so give them the same classification as the input documents and handle them under the same rules.
+**Credits.** Inspired by [`Rlahuerta/pdf-forensics-toolkit`](https://github.com/Rlahuerta/pdf-forensics-toolkit)
+(MIT). The code was written anew; see [`NOTICE`](NOTICE). Released under the [MIT License](LICENSE).

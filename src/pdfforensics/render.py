@@ -125,19 +125,24 @@ def batch_markdown(reports: list[dict[str, Any]], failures: list[dict[str, str]]
     out = ["# Document forensic batch summary", "",
            batch_summary_markdown(batch_summary(reports, failures)),
            "## Documents", "",
-           "| File | Verdict | Revisions | Signatures | Top findings | Pipeline |", "|---|---|---|---|---|---|"]
+           "| File | Format | Verdict | Revisions / tracked changes | Signatures | Top findings | Pipeline |",
+           "|---|---|---|---|---|---|---|"]
     groups: dict[str, list[str]] = defaultdict(list)
     for r in reports:
         fp = r["facts"].get("fingerprint", {})
         groups[fp.get("pipeline_hash", "?")].append(r["file"]["name"])
-        out.append("| {} | `{}` | {} | {} | {} | `{}` |".format(
-            _md_escape(r["file"]["name"]), r["verdict"]["label"],
-            r["facts"].get("revisions", {}).get("revision_count", "?"),
-            r["facts"].get("signatures", {}).get("signature_count", 0),
-            ", ".join(r["verdict"]["top_findings"][:3]) or "-",
-            fp.get("pipeline_hash", "?")))
+        if r["file"].get("format", "pdf") == "pdf":
+            history = r["facts"].get("revisions", {}).get("revision_count", "?")
+            sigs = r["facts"].get("signatures", {}).get("signature_count", 0)
+        else:
+            oc = r["facts"].get("office_content", {})
+            history = f"{oc.get('tracked_insertions', 0) + oc.get('tracked_deletions', 0)} tracked" if oc else "-"
+            sigs = len(r["facts"].get("office_active", {}).get("xml_signature_parts", [])) or 0
+        out.append("| {} | {} | `{}` | {} | {} | {} | `{}` |".format(
+            _md_escape(r["file"]["name"]), (r["file"].get("kind") or "pdf").upper(), r["verdict"]["label"],
+            history, sigs, ", ".join(r["verdict"]["top_findings"][:3]) or "-", fp.get("pipeline_hash", "?")))
     for fl in failures:
-        out.append(f"| {_md_escape(fl['file'])} | `not-analysed` | - | - | {_md_escape(fl['error'])} | - |")
+        out.append(f"| {_md_escape(fl['file'])} | - | `not-analysed` | - | - | {_md_escape(fl['error'])} | - |")
     out += ["", "## Documents grouped by production pipeline", ""]
     for h, names in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         fam = next((r["facts"]["fingerprint"].get("producer_family") for r in reports
