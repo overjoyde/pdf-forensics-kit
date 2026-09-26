@@ -210,7 +210,16 @@ def analyze(doc: Document) -> AnalyzerResult:
 
     info_prod = info.get("Producer", "")
     xmp_prod = (xmp or {}).get("producer") or ""
-    if info_prod and xmp_prod and _norm(info_prod) != _norm(xmp_prod):
+    ni, nx = _norm(info_prod), _norm(xmp_prod)
+    if info_prod and xmp_prod and ni != nx and (nx in ni or ni in nx):
+        # e.g. "Bank Engine 3.1; pyHanko 0.37" vs "Bank Engine 3.1": a signing/processing tool appended its name
+        res.findings.append(Finding(
+            id="metadata.producer-extended", title="A second tool appended its name to the producer",
+            severity=Severity.INFO, confidence=Confidence.HIGH, category="metadata",
+            explanation=("The Info producer extends the XMP producer with another tool's name. Signing and "
+                         "post-processing tools (e.g. pyHanko, Acrobat's signing) commonly do this."),
+            evidence={"info_producer": info_prod, "xmp_producer": xmp_prod}))
+    elif info_prod and xmp_prod and ni != nx:
         res.findings.append(Finding(
             id="metadata.producer-mismatch", title="Info and XMP disagree on the producing software",
             severity=Severity.LOW, confidence=Confidence.MEDIUM, category="metadata",
