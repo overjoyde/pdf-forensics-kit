@@ -185,8 +185,11 @@ def _ruled_out(r: dict[str, Any]) -> list[str]:
     cats = {f["category"] for f in r["findings"] if f["severity"] != "info"}
     facts = r.get("facts", {})
     out = []
-    if not any(i.startswith("revisions.") and i not in ("revisions.signature-update", "revisions.metadata-update")
-               for i in ids):
+    history_uncertain = ids & {"structure.xref-chain-broken", "structure.unlinked-revision",
+                               "structure.extra-eof-markers"}
+    if not history_uncertain and not any(
+            i.startswith("revisions.") and i not in ("revisions.signature-update", "revisions.metadata-update")
+            for i in ids):
         out.append("No page content was changed through appended edits.")
     if (facts.get("signatures", {}).get("signature_count") and
             not any(i in ids for i in ("signature.broken", "signature.disallowed-modification",

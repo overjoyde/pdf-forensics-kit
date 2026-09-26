@@ -143,6 +143,21 @@ def analyze(doc: Document) -> AnalyzerResult:
             evidence={"errors": rs.chain_errors},
             benign_explanations=["Buggy producer or file concatenation/truncation during transfer"],
         ))
+    recovered = rs.recovered_revisions
+    res.facts["recovered_revisions"] = [r.index for r in recovered]
+    if recovered:
+        res.findings.append(Finding(
+            id="structure.unlinked-revision",
+            title=f"{len(recovered)} earlier version(s) of the file not linked by the cross-reference chain",
+            severity=Severity.MEDIUM, confidence=Confidence.HIGH, category="structure",
+            explanation=("The file contains a complete earlier version that the startxref/Prev chain does not "
+                         "lead to. Readers show only the latest version, so the earlier one is invisible in a "
+                         "viewer. It has been recovered and compared like any other revision."),
+            evidence={"revisions": [{"revision": r.index, "end": r.end} for r in recovered],
+                      "chain_errors": rs.chain_errors},
+            benign_explanations=["Producer that writes updates without /Prev",
+                                 "Two PDF files concatenated during transfer"],
+        ))
     if len(revisions) <= 1:
         return res
 

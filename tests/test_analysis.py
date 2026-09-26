@@ -1,4 +1,5 @@
 import importlib
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -84,6 +85,75 @@ def test_raw_parser_revision_boundaries_are_standalone_files():
     rs = raw.parse(upd)
     assert [r.end for r in rs.revisions] == [len(base), len(upd)]
     assert rs.xref_style == "classic"
+
+
+def _edit_total(data: bytes, total: str = "Total: 900 SEK") -> dict[int, bytes]:
+    return {pdfgen.content_objnum(data): pdfgen.stream_obj(pdfgen.text_stream("Invoice 2026-001", total))}
+
+
+def _assert_edit_found(r: dict) -> None:
+    f = finding(r, "revisions.content-changed")
+    assert any("900 SEK" in e["text"] for e in f["evidence"]["text_added"])
+    assert r["verdict"]["label"] != "no-indicators"
+    assert "No page content was changed through appended edits." not in r["summary"]["ruled_out"]
+
+
+def test_linearized_file_with_update_has_two_revisions(analyze):
+    base = pdfgen.build(linearize=True)
+    r = analyze(pdfgen.append_update(base, _edit_total(base)))
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    assert r["facts"]["revisions"]["linearized"] is True
+    _assert_edit_found(r)
+
+
+def test_linearized_keyword_outside_linearization_dictionary_is_ignored(analyze):
+    """Only the first object of the file can be a linearization dictionary."""
+    base = pdfgen.build(producer="Acme Billing 4.2 /Linearized 1 /E 999999999")
+    assert b"/Linearized" in base[:2048]
+    r = analyze(pdfgen.append_update(base, _edit_total(base)))
+    assert r["facts"]["revisions"]["linearized"] is False
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    _assert_edit_found(r)
+
+
+def test_linearization_hint_cannot_absorb_a_later_update(analyze):
+    """The first-page section is the lowest one in the file and links forward; a later update never qualifies."""
+    base = pdfgen.build(linearize=True)
+    e = re.search(rb"/E (\d+)", base)
+    forged = base[:e.start(1)] + b"9" * len(e.group(1)) + base[e.end(1):]
+    upd = pdfgen.append_update(forged, _edit_total(forged))
+    assert int(b"9" * len(e.group(1))) > len(upd)
+    r = analyze(upd)
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    _assert_edit_found(r)
+
+
+def test_update_without_prev_link_still_exposes_earlier_revision(analyze):
+    base = pdfgen.build()
+    upd = pdfgen.append_unlinked_update(base, _edit_total(base))
+    r = analyze(upd)
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    assert "structure.unlinked-revision" in ids(r)
+    _assert_edit_found(r)
+
+
+def test_broken_prev_link_still_exposes_earlier_revision(analyze):
+    base = pdfgen.build()
+    upd = pdfgen.append_update(base, _edit_total(base))
+    broken = re.sub(rb"/Prev \d+", b"/Prev 7", upd)
+    r = analyze(broken)
+    assert "structure.xref-chain-broken" in ids(r)
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    _assert_edit_found(r)
+
+
+def test_pdf_inside_a_stream_is_not_a_revision(analyze):
+    """An uncompressed PDF carried in a stream has its own startxref/%%EOF; those are not revisions."""
+    inner = pdfgen.build()
+    r = analyze(pdfgen.with_orphan(pdfgen.build(), pdfgen.stream_obj(inner)))
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    assert "structure.unlinked-revision" not in ids(r)
+    assert "revisions.content-changed" not in ids(r)
 
 
 # ---------------------------------------------------------------- signatures
