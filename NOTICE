@@ -1,0 +1,7 @@
+pdf-forensics-kit
+Copyright (c) 2026 Johan Overgaard. Licensed under the MIT License.
+
+Inspired by pdf-forensics-toolkit (https://github.com/Rlahuerta/pdf-forensics-toolkit),
+Copyright (c) Rlahuerta, MIT License. Ideas reused: revision text recovery, source
+fingerprinting, active-content and hidden-content checks, lists of known PDF producers.
+No upstream source files were copied; all code in this repository was written anew.

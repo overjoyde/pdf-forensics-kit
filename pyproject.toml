@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-forensics-kit"
+version = "0.1.0"
+description = "Explainable, signature-aware PDF tampering and provenance analysis."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Johan Overgaard" }]
+dependencies = [
+    "pikepdf>=9.0",   # MPL-2.0, qpdf-backed low-level PDF access
+    "pypdf>=5.0",     # BSD, per-revision text extraction
+]
+
+[project.optional-dependencies]
+signatures = ["pyhanko>=0.25"]  # MIT, cryptographic signature validation
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pdfforensics = "pdfforensics.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
