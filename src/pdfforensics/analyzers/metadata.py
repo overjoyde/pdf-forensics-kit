@@ -11,9 +11,10 @@ import pikepdf
 
 from pdfforensics.document import Document
 from pdfforensics.model import AnalyzerResult, Confidence, Finding, Severity
-from pdfforensics.pdfutil import date_diff, get, iso, parse_pdf_date, parse_xmp_date, s
+from pdfforensics.pdfutil import StreamTooLarge, date_diff, get, iso, parse_pdf_date, parse_xmp_date, read_stream, s
 
 MAX_XMP_BYTES = 2 * 1024 * 1024
+XMP_TOO_LARGE = "XMP stream larger than 2 MB; skipped"
 EXACT_TOLERANCE = timedelta(minutes=2)
 NAIVE_TOLERANCE = timedelta(hours=14)  # max UTC offset spread when a timezone is missing
 
@@ -83,11 +84,13 @@ def read_xmp(pdf: pikepdf.Pdf) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(md, pikepdf.Stream):
         return None, None
     try:
-        raw = md.read_bytes()
+        raw, truncated = read_stream(md, MAX_XMP_BYTES)
+    except StreamTooLarge:
+        return None, XMP_TOO_LARGE
     except Exception as exc:
         return None, f"XMP stream unreadable: {exc}"
-    if len(raw) > MAX_XMP_BYTES:
-        return None, "XMP stream larger than 2 MB; skipped"
+    if truncated:
+        return None, XMP_TOO_LARGE
     text = raw.decode("utf-8", errors="replace")
     # XMP packets may carry a BOM / xpacket PI; ET handles PIs, strip leading junk.
     start = text.find("<")
@@ -146,6 +149,15 @@ def analyze(doc: Document) -> AnalyzerResult:
                       "trailer_id_parts_equal": len(ids) == 2 and ids[0] == ids[1]})
     if xmp_err:
         res.facts["xmp_error"] = xmp_err
+    if xmp_err == XMP_TOO_LARGE:
+        res.findings.append(Finding(
+            id="analysis.stream-too-large", title="XMP metadata stream too large to decode; not analysed",
+            severity=Severity.LOW, confidence=Confidence.HIGH, category="metadata",
+            explanation=("The XMP stream decodes to more than 2 MB, so it was not decoded and XMP dates and history "
+                         "were not checked. Real XMP packets are a few kilobytes; a very large one can be padding "
+                         "or a decompression bomb."),
+            evidence={"limit_bytes": MAX_XMP_BYTES},
+            benign_explanations=["Producer embedding large thumbnails or history in XMP"]))
 
     now = datetime.now(timezone.utc)
     c_info = parse_pdf_date(info.get("CreationDate", ""))

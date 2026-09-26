@@ -13,7 +13,7 @@ import pikepdf
 
 from pdfforensics.document import Document
 from pdfforensics.model import AnalyzerResult, Confidence, Finding, Severity
-from pdfforensics.pdfutil import get, name, s
+from pdfforensics.pdfutil import MAX_DECODED_STREAM_BYTES, get, name, s, stream_fits
 
 TEXT_SHOW_OPS = {"Tj", "TJ", "'", '"'}
 MAX_XOBJECT_DEPTH = 6
@@ -38,6 +38,15 @@ def _scan_stream(target: Any, resources: Any, stats: Counter, depth: int, seen: 
         stats["depth_limited"] += 1
         return
     try:
+        # parse_content_stream decodes everything at once; check the size first
+        if isinstance(target, pikepdf.Page):
+            contents = get(target.obj, "/Contents")
+            streams = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
+        else:
+            streams = [target]
+        if not all(stream_fits(st, MAX_DECODED_STREAM_BYTES) for st in streams if isinstance(st, pikepdf.Stream)):
+            stats["streams_over_limit"] += 1
+            return
         instructions = pikepdf.parse_content_stream(target)
     except Exception:
         stats["unparsable_streams"] += 1
@@ -130,6 +139,16 @@ def analyze(doc: Document) -> AnalyzerResult:
                     continue
 
     res.facts.update({"pages": pages_info[:200], "annotation_types": dict(annot_types)})
+    over = [p["page"] for p in pages_info if p.get("streams_over_limit")]
+    if over:
+        res.findings.append(Finding(
+            id="analysis.stream-too-large",
+            title=f"Content on {len(over)} page(s) too large to decode; not checked for hidden text",
+            severity=Severity.LOW, confidence=Confidence.HIGH, category="content",
+            explanation=(f"A content stream decodes to more than {MAX_DECODED_STREAM_BYTES // (1024 * 1024)} MB, "
+                         "so it was not parsed and invisible text on these pages was not checked."),
+            evidence={"pages": over[:50], "limit_bytes": MAX_DECODED_STREAM_BYTES},
+            benign_explanations=["Very complex vector drawing, such as a detailed map or plan"]))
 
     # optional content hidden by default / different on print
     ocp = get(pdf.Root, "/OCProperties")

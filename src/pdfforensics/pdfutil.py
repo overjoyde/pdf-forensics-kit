@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
@@ -80,6 +81,111 @@ def object_digest(obj: pikepdf.Object) -> str:
         except Exception:
             pass
     return h.hexdigest()
+
+
+# --------------------------------------------------------------------------- bounded stream decoding
+
+_FLATE = {"/FlateDecode", "/Fl"}
+# Worst-case expansion per filter, used for chains that are not decoded incrementally here.
+_MAX_EXPANSION = {"/ASCIIHexDecode": 1, "/AHx": 1, "/ASCII85Decode": 1, "/A85": 1,
+                  "/RunLengthDecode": 128, "/RL": 128, "/LZWDecode": 4096, "/LZW": 4096,
+                  "/FlateDecode": 1032, "/Fl": 1032}
+_CHUNK = 1 << 16
+MAX_DECODED_STREAM_BYTES = 64 * 1024 * 1024   # largest stream an analyser decodes in full
+
+
+class StreamTooLarge(ValueError):
+    """The stream could decode to more than the allowed size, so it was not decoded."""
+
+
+def _filters(stream: pikepdf.Stream) -> tuple[list[str], bool]:
+    f = stream.get("/Filter")
+    names = [str(x) for x in f] if isinstance(f, pikepdf.Array) else ([str(f)] if f is not None else [])
+    parms = stream.get("/DecodeParms")
+    plist = list(parms) if isinstance(parms, pikepdf.Array) else [parms]
+    predictor = False
+    for p in plist:
+        try:
+            predictor = predictor or (isinstance(p, pikepdf.Dictionary) and int(p.get("/Predictor", 1)) > 1)
+        except Exception:
+            predictor = True
+    return names, predictor
+
+
+def _inflate(data: bytes, limit: int, keep: bool = True) -> tuple[bytes, int]:
+    """Inflate ``data``, producing at most ``limit + 1`` bytes. Returns (output if keep, bytes produced).
+
+    Corrupt input stops decoding and keeps what was produced, as qpdf does.
+    """
+    d = zlib.decompressobj()
+    out: list[bytes] = []
+    produced = 0
+    buf = data
+    try:
+        while produced <= limit and not d.eof:
+            chunk = d.decompress(buf, min(_CHUNK, limit + 1 - produced))
+            buf = d.unconsumed_tail
+            if not chunk and not buf:
+                break
+            produced += len(chunk)
+            if keep:
+                out.append(chunk)
+    except zlib.error:
+        pass
+    return b"".join(out), produced
+
+
+def _flate_only(names: list[str], predictor: bool) -> bool:
+    return bool(names) and not predictor and all(n in _FLATE for n in names)
+
+
+def _worst_case_size(stream: pikepdf.Stream, names: list[str], limit: int) -> int:
+    raw = stream.read_raw_bytes()
+    size = len(raw)
+    for i, n in enumerate(names):
+        if i == 0 and n in _FLATE:
+            size = _inflate(raw, limit, keep=False)[1]
+        else:
+            size *= _MAX_EXPANSION.get(n, 1)
+    return size
+
+
+def read_stream(stream: pikepdf.Stream, limit: int) -> tuple[bytes, bool]:
+    """Decoded stream data, never decoding more than ``limit`` bytes. Returns (data, truncated).
+
+    Unfiltered and Flate-only streams are decoded incrementally and cut at ``limit``. Other filter
+    chains are decoded by qpdf only if their worst case fits; otherwise StreamTooLarge is raised.
+    """
+    names, predictor = _filters(stream)
+    if not names:
+        raw = stream.read_raw_bytes()
+        return raw[:limit], len(raw) > limit
+    if _flate_only(names, predictor):
+        data, truncated = stream.read_raw_bytes(), False
+        for _ in names:
+            data, produced = _inflate(data, limit)
+            truncated = truncated or produced > limit
+        return data[:limit], truncated
+    if _worst_case_size(stream, names, limit) > limit:
+        raise StreamTooLarge(f"stream may decode to more than {limit} bytes")
+    data = stream.read_bytes()
+    return data[:limit], len(data) > limit
+
+
+def stream_fits(stream: pikepdf.Stream, limit: int) -> bool:
+    """Whether the stream decodes to at most ``limit`` bytes, without keeping the decoded data."""
+    names, predictor = _filters(stream)
+    if not names:
+        return len(stream.read_raw_bytes()) <= limit
+    if _flate_only(names, predictor):
+        data = stream.read_raw_bytes()
+        for i, _ in enumerate(names):
+            last = i == len(names) - 1
+            data, produced = _inflate(data, limit, keep=not last)
+            if produced > limit:
+                return False
+        return True
+    return _worst_case_size(stream, names, limit) <= limit
 
 
 # --------------------------------------------------------------------------- dates
