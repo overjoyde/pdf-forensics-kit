@@ -143,13 +143,42 @@ def analyze(doc: Document) -> AnalyzerResult:
             evidence={"errors": rs.chain_errors},
             benign_explanations=["Buggy producer or file concatenation/truncation during transfer"],
         ))
+    recovered = rs.recovered_revisions
+    res.facts["recovered_revisions"] = [r.index for r in recovered]
+    if recovered:
+        res.findings.append(Finding(
+            id="structure.unlinked-revision",
+            title=f"{len(recovered)} earlier version(s) of the file not linked by the cross-reference chain",
+            severity=Severity.MEDIUM, confidence=Confidence.HIGH, category="structure",
+            explanation=("The file contains a complete earlier version that the startxref/Prev chain does not "
+                         "lead to. Readers show only the latest version, so the earlier one is invisible in a "
+                         "viewer. It has been recovered and compared like any other revision."),
+            evidence={"revisions": [{"revision": r.index, "end": r.end} for r in recovered],
+                      "chain_errors": rs.chain_errors},
+            benign_explanations=["Producer that writes updates without /Prev",
+                                 "Two PDF files concatenated during transfer"],
+        ))
     if len(revisions) <= 1:
         return res
 
     sig_ends = signature_ends(doc)
     to_analyse = revisions[-doc.options.max_revisions:]
     if len(to_analyse) < len(revisions):
-        res.facts["revisions_skipped"] = len(revisions) - len(to_analyse)
+        # Keep the original as the baseline, so changes inside the skipped range still show up
+        # in the comparison with the oldest revision that is analysed.
+        to_analyse = [revisions[0]] + revisions[-max(doc.options.max_revisions - 1, 1):]
+        skipped = len(revisions) - len(to_analyse)
+        res.facts["revisions_skipped"] = skipped
+        res.findings.append(Finding(
+            id="revisions.not-all-compared",
+            title=f"{skipped} intermediate revision(s) not compared individually",
+            severity=Severity.LOW, confidence=Confidence.HIGH, category="revisions",
+            explanation=("The file has more revisions than the configured limit (--max-revisions). The original "
+                         "is compared with the oldest analysed revision, so content changes in the skipped range "
+                         "still show up, but they are not attributed to a specific revision."),
+            evidence={"revision_count": len(revisions), "skipped": skipped,
+                      "max_revisions": doc.options.max_revisions},
+            benign_explanations=["Long-lived form or workflow document with many small saves"]))
 
     prev_digests: dict[tuple[int, int], str] | None = None
     prev_text: list[str] | None = None

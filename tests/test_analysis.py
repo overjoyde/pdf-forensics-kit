@@ -1,4 +1,6 @@
 import importlib
+import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -6,6 +8,8 @@ import pytest
 import pdfgen
 from conftest import finding, ids
 from pdfforensics import raw
+from pdfforensics.document import Options
+from pdfforensics.engine import analyze_file
 
 
 # ---------------------------------------------------------------- baseline / false-positive guards
@@ -84,6 +88,127 @@ def test_raw_parser_revision_boundaries_are_standalone_files():
     rs = raw.parse(upd)
     assert [r.end for r in rs.revisions] == [len(base), len(upd)]
     assert rs.xref_style == "classic"
+
+
+def _edit_total(data: bytes, total: str = "Total: 900 SEK") -> dict[int, bytes]:
+    return {pdfgen.content_objnum(data): pdfgen.stream_obj(pdfgen.text_stream("Invoice 2026-001", total))}
+
+
+def _assert_edit_found(r: dict) -> None:
+    f = finding(r, "revisions.content-changed")
+    assert any("900 SEK" in e["text"] for e in f["evidence"]["text_added"])
+    assert r["verdict"]["label"] != "no-indicators"
+    assert "No page content was changed through appended edits." not in r["summary"]["ruled_out"]
+
+
+def test_linearized_file_with_update_has_two_revisions(analyze):
+    base = pdfgen.build(linearize=True)
+    r = analyze(pdfgen.append_update(base, _edit_total(base)))
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    assert r["facts"]["revisions"]["linearized"] is True
+    _assert_edit_found(r)
+
+
+def test_linearized_keyword_outside_linearization_dictionary_is_ignored(analyze):
+    """Only the first object of the file can be a linearization dictionary."""
+    base = pdfgen.build(producer="Acme Billing 4.2 /Linearized 1 /E 999999999")
+    assert b"/Linearized" in base[:2048]
+    r = analyze(pdfgen.append_update(base, _edit_total(base)))
+    assert r["facts"]["revisions"]["linearized"] is False
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    _assert_edit_found(r)
+
+
+def test_linearization_hint_cannot_absorb_a_later_update(analyze):
+    """The first-page section is the lowest one in the file and links forward; a later update never qualifies."""
+    base = pdfgen.build(linearize=True)
+    e = re.search(rb"/E (\d+)", base)
+    forged = base[:e.start(1)] + b"9" * len(e.group(1)) + base[e.end(1):]
+    upd = pdfgen.append_update(forged, _edit_total(forged))
+    assert int(b"9" * len(e.group(1))) > len(upd)
+    r = analyze(upd)
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    _assert_edit_found(r)
+
+
+def test_update_without_prev_link_still_exposes_earlier_revision(analyze):
+    base = pdfgen.build()
+    upd = pdfgen.append_unlinked_update(base, _edit_total(base))
+    r = analyze(upd)
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    assert "structure.unlinked-revision" in ids(r)
+    _assert_edit_found(r)
+
+
+def test_broken_prev_link_still_exposes_earlier_revision(analyze):
+    base = pdfgen.build()
+    upd = pdfgen.append_update(base, _edit_total(base))
+    broken = re.sub(rb"/Prev \d+", b"/Prev 7", upd)
+    r = analyze(broken)
+    assert "structure.xref-chain-broken" in ids(r)
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    _assert_edit_found(r)
+
+
+def test_unlinked_revision_closed_by_an_xref_stream_is_recovered():
+    base = pdfgen.build(object_streams=True)
+    upd = pdfgen.append_update(base, _edit_total(base))
+    broken = re.sub(rb"/Prev \d+", b"/Prev 7", upd)
+    rs = raw.parse(broken)
+    assert [r.end for r in rs.recovered_revisions] == [len(base)]
+    assert [r.end for r in rs.revisions] == [len(base), len(broken)]
+
+
+def test_pdf_inside_a_stream_is_not_a_revision(analyze):
+    """An uncompressed PDF carried in a stream has its own startxref/%%EOF; those are not revisions."""
+    inner = pdfgen.build()
+    r = analyze(pdfgen.with_orphan(pdfgen.build(), pdfgen.stream_obj(inner)))
+    assert r["facts"]["revisions"]["revision_count"] == 2
+    assert "structure.unlinked-revision" not in ids(r)
+    assert "revisions.content-changed" not in ids(r)
+
+
+def test_pdf_attached_with_indirect_length_is_not_a_revision(analyze):
+    """A stream whose /Length is indirect is delimited by endstream, which an inner PDF can contain."""
+    base = pdfgen.build()
+    size = int(re.findall(rb"/Size\s+(\d+)", base)[-1])
+    attachment = b"<< /Type /EmbeddedFile /Length %d 0 R >>\nstream\n" % (size + 1) + base + b"\nendstream"
+    r = analyze(pdfgen.append_update(base, {size: attachment, size + 1: b"%d" % len(base)}))
+    assert "structure.unlinked-revision" not in ids(r)
+    assert r["facts"]["revisions"]["revision_count"] == 2
+
+
+def test_direct_length_pattern_ignores_indirect_references():
+    assert raw._DIRECT_LENGTH_RE.search(b"<< /Length 12 0 R >>") is None
+    assert raw._DIRECT_LENGTH_RE.search(b"<< /Length 12 >>").group(1) == b"12"
+
+
+@pytest.mark.parametrize("junk", [b">>\nstream\nendstream\n", b"startxref %d %%%%EOF "],
+                         ids=["stream-headers", "startxref-markers"])
+def test_raw_parser_stays_linear_on_repeated_markers(junk):
+    base = pdfgen.build()
+    size = int(re.findall(rb"/Size\s+(\d+)", base)[-1])
+    probe = pdfgen.append_update(base, {size: b"<< /A 1 >>", size + 1: b"()"})
+    if b"%d" in junk:
+        junk = junk % probe.find(b"%d 0 obj" % size, len(base))
+    data = pdfgen.append_update(base, {size: b"<< /A 1 >>", size + 1: b"(" + junk * 40000 + b")"})
+    start = time.perf_counter()
+    raw.parse(data)
+    assert time.perf_counter() - start < 2.0
+
+
+def test_content_change_before_skipped_revisions_is_still_found(tmp_path):
+    base = pdfgen.build()
+    data = pdfgen.append_update(base, _edit_total(base))
+    info = pdfgen.info_objnum(base)
+    for i in range(6):
+        data = pdfgen.append_update(data, {info: b"<< /Producer (Acme Billing 4.2) /Title (t%d) >>" % i})
+    p = tmp_path / "doc.pdf"
+    p.write_bytes(data)
+    r = analyze_file(p, Options(max_revisions=3, external_tools=False)).to_dict()
+    assert r["facts"]["revisions"]["revisions_skipped"] > 0
+    assert "revisions.not-all-compared" in ids(r)
+    _assert_edit_found(r)
 
 
 # ---------------------------------------------------------------- signatures

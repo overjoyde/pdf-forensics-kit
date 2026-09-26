@@ -105,6 +105,31 @@ def append_update(data: bytes, new_objects: dict[int, bytes]) -> bytes:
     return bytes(out)
 
 
+def append_unlinked_update(data: bytes, new_objects: dict[int, bytes]) -> bytes:
+    """Append an update with a complete cross-reference table and no /Prev link to the earlier one.
+
+    Readers accept such a file, but the earlier revision is no longer reachable through the chain.
+    Only works on files without object streams (every object must have a top-level "N 0 obj").
+    """
+    tail = data[int(re.findall(rb"startxref\s+(\d+)\s+%%EOF", data)[-1]):]
+    root = re.search(rb"/Root\s+\d+\s+\d+\s+R", tail).group(0)
+    info = re.search(rb"/Info\s+\d+\s+\d+\s+R", tail)
+    out = bytearray(data)
+    if not out.endswith(b"\n"):
+        out += b"\n"
+    for num, body in sorted(new_objects.items()):
+        out += b"%d 0 obj\n" % num + body + b"\nendobj\n"
+    offsets = {int(m.group(1)): m.start() for m in re.finditer(rb"(?m)^(\d+) 0 obj", bytes(out))}
+    size = max(offsets) + 1
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % size
+    for num in range(1, size):
+        out += (b"%010d 00000 n \n" % offsets[num]) if num in offsets else b"0000000000 65535 f \n"
+    out += b"trailer\n<< /Size %d %s" % (size, root) + ((b" " + info.group(0)) if info else b"") + b" >>\n"
+    out += b"startxref\n%d\n%%%%EOF\n" % xref
+    return bytes(out)
+
+
 def stream_obj(content: bytes) -> bytes:
     return b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream"
 

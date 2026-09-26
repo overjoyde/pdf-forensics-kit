@@ -60,6 +60,7 @@ Severity is my assessment of impact on a report a fraud investigator would rely 
 ## 4. Improvements implemented here
 
 - Revision boundaries come from the **`startxref` -> `/Prev` chain** (classic and xref-stream trailers), with linearization detected and discounted. This fixes D1/D2/D10.
+- The chain is not trusted to be complete. Linearization is only recognised from a linearization dictionary that is the file's first object, and only the lowest, forward-linking section can be the first-page section. A `startxref ... %%EOF` outside any stream that the chain does not reach, but that points at a real cross-reference section, closes an earlier version of the file; it is recovered, compared like any other revision and reported as `structure.unlinked-revision`.
 - **Per-revision object diff:** which objects were added, changed or removed in each update. Old versions of superseded objects are recoverable (fixes D13).
 - **Per-revision text diff** (kept from upstream, now on correct boundaries) and `extract-revisions` to write each revision as a standalone PDF for the examiner.
 - **Signature-aware**: signature ByteRanges are mapped to revisions. Updates that only add a signature are classed as benign. Bytes appended after the last signature are a high-severity finding (fixes D14/D15). pyHanko validation runs when installed.
