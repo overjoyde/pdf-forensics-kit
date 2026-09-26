@@ -144,3 +144,16 @@ def test_pdf_report_without_reportlab_exits_2(tmp_path, monkeypatch, capsys):
     assert main(["analyze", str(src), "--no-prompt", "--no-external-tools", "--pdf-report", str(out)]) == 2
     assert not out.exists()
     assert "pdf-forensics-kit[report]" in capsys.readouterr().err
+
+
+@needs_pyhanko
+def test_backdated_edit_after_signing_stays_after_the_signature(analyze):
+    """Revision order is proven by the bytes; a claimed time is not. A backdated edit keeps its place."""
+    signed = pdfgen.sign(pdfgen.build())
+    edited = pdfgen.append_update(signed, {
+        pdfgen.content_objnum(signed): pdfgen.stream_obj(pdfgen.text_stream("Invoice 2026-001", "Total: 9 SEK")),
+        pdfgen.info_objnum(signed): b"<< /Producer (Acme PDF Editor 3) /ModDate (D:20200101000000Z) >>"})
+    r = analyze(edited)
+    kinds = [e["kind"] for e in _events(r) if e["kind"] in ("signature", "content-change")]
+    assert kinds == ["signature", "content-change"]
+    assert "timeline.inconsistent-times" in ids(r)

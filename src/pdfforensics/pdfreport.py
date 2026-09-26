@@ -17,7 +17,8 @@ EVIDENCE_LABEL = {
     "signed": "inside a signature",
     "timestamped": "trusted timestamp (RFC 3161)",
 }
-TIMES_NOTE = ("Times written into a file are set by the software that saved it and can be changed by anyone who "
+TIMES_NOTE = ("Rows follow the order of the revisions in the file, which is fixed by its bytes. "
+              "Times written into a file are set by the software that saved it and can be changed by anyone who "
               "edits the file. A signed time is covered by the signer's signature. Only an RFC 3161 timestamp "
               "from a timestamp authority independently shows that the document existed at that time.")
 

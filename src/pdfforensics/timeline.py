@@ -145,13 +145,25 @@ def _word_events(facts: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _sort(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Timed events by time (UTC-normalised; naive times as UTC), then untimed ones in their original order."""
-    def key(e: dict[str, Any]) -> datetime:
+    """Order events the way the file proves them, then by time.
+
+    The order of PDF revisions is fixed by the bytes; a time written into a revision is only a claim.
+    Events tied to a revision therefore follow revision order (by time within a revision). Events without
+    a revision (XMP history, Word tracked changes) follow by time, untimed ones last in their original order.
+    """
+    far = datetime.max.replace(tzinfo=timezone.utc)
+
+    def when(e: dict[str, Any]) -> datetime:
         d = _dt(e["when"])
+        if d is None:
+            return far
         return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
-    timed = [e for e in events if _dt(e["when"])]
-    untimed = [e for e in events if not _dt(e["when"])]
-    return sorted(timed, key=key) + untimed
+
+    indexed = list(enumerate(events))
+    by_revision = sorted((x for x in indexed if x[1]["revision"] is not None),
+                         key=lambda x: (x[1]["revision"], when(x[1]), x[0]))
+    others = sorted((x for x in indexed if x[1]["revision"] is None), key=lambda x: (when(x[1]), x[0]))
+    return [e for _, e in by_revision + others]
 
 
 def _inconsistencies(events: list[dict[str, Any]], revision_times: list[dict[str, Any]]) -> list[dict[str, Any]]:
