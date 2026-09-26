@@ -2,6 +2,7 @@
 
     pdfforensics                                   # interactive shell (also: pdfforensics shell)
     pdfforensics analyze FILE_OR_DIR... [--json OUT] [--markdown OUT] [--out-dir DIR] [--fail-on LEVEL]
+                         [--fail-on-incomplete]
     pdfforensics analyze FILE --summary [OUT]      # plain-language summary when done
     pdfforensics summarize REPORT.forensics.json... [-o OUT] [--json OUT]
     pdfforensics compare A.pdf B.pdf [--json OUT]
@@ -101,9 +102,9 @@ def cmd_analyze(a: argparse.Namespace) -> int:
         threshold = LEVELS[a.fail_on]
         if any(LEVELS[r["verdict"]["level"]] >= threshold for r in reports):
             return 1
-        # a check that failed, or a file that could not be analysed, is never a pass
-        if failures or any(not r["verdict"].get("complete", True) for r in reports):
-            return 1
+    # opt-in: a check that failed, or a file that could not be analysed, is not a pass
+    if a.fail_on_incomplete and (failures or any(not r["verdict"].get("complete", True) for r in reports)):
+        return 1
     return 0
 
 
@@ -234,7 +235,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="save a Markdown report next to each analysed document, without asking")
     an.add_argument("--no-prompt", action="store_true",
                     help="never ask whether to save a report (for scripts)")
-    an.add_argument("--fail-on", choices=list(LEVELS), help="exit 1 if any verdict is at or above this level, or if any analysis is incomplete")
+    an.add_argument("--fail-on", choices=list(LEVELS), help="exit 1 if any verdict is at or above this level")
+    an.add_argument("--fail-on-incomplete", action="store_true",
+                    help="exit 1 if any analysis is incomplete or any file could not be analysed")
     an.set_defaults(func=cmd_analyze)
 
     cp = sub.add_parser("compare", parents=[common], help="compare two PDFs")

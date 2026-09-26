@@ -354,6 +354,7 @@ def batch_summary(reports: list[dict[str, Any]], failures: list[dict[str, str]] 
                              "reason": s["key_findings"][0]["title"] if s["key_findings"] else ""}
                             for r, s in needing],
         "not_analysed": failures,
+        "incomplete": [r["file"]["name"] for r in incomplete],
         "distinct_pipelines": len([p for p in pipelines if p]),
     }
 
