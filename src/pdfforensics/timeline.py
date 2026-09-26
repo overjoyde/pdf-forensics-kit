@@ -18,6 +18,7 @@ from pdfforensics.pdfutil import iso, parse_xmp_date
 
 CLAIMED, SIGNED, TIMESTAMPED = "claimed", "signed", "timestamped"
 TOLERANCE = timedelta(minutes=2)
+NAIVE_TOLERANCE = timedelta(hours=14)  # widest UTC offset spread when a date has no timezone
 
 
 def _event(kind: str, what: str, *, when: str | None = None, source: str = "", evidence: str | None = None,
@@ -52,9 +53,27 @@ def _revision_time(t: dict[str, Any]) -> tuple[str | None, str]:
     return None, ""
 
 
+def _own_times(revision_times: list[dict[str, Any]]) -> dict[int, tuple[str | None, str]]:
+    """The save time each revision wrote itself. An update that leaves /Info and XMP alone inherits the
+    earlier values; those are not its own save time, so it gets none."""
+    own: dict[int, tuple[str | None, str]] = {}
+    prev: dict[str, Any] | None = None
+    for t in sorted(revision_times, key=lambda x: x["revision"]):
+        n = t["revision"]
+        if prev is None or (t.get("info_mod") and t.get("info_mod") != prev.get("info_mod")):
+            own[n] = _revision_time(t)
+        elif t.get("xmp_modify") and t.get("xmp_modify") != prev.get("xmp_modify"):
+            own[n] = (t["xmp_modify"], f"XMP ModifyDate of revision {n}")
+        else:
+            own[n] = (None, "")
+        prev = t
+    return own
+
+
 def _pdf_events(facts: dict[str, Any]) -> list[dict[str, Any]]:
     rev = facts.get("revisions", {})
     times = {t["revision"]: t for t in rev.get("revision_times", [])}
+    own = _own_times(rev.get("revision_times", []))
     sig = facts.get("signatures", {})
     signed_ends = [c["signed_end"] for c in sig.get("signatures", []) if "signed_end" in c]
     last_signed = max(signed_ends) if signed_ends else None
@@ -70,7 +89,8 @@ def _pdf_events(facts: dict[str, Any]) -> list[dict[str, Any]]:
 
     for u in rev.get("updates", []):
         n = u["revision"]
-        when, source = _revision_time(times.get(n, {}))
+        when, source = own.get(n, (None, ""))
+        unstamped = "" if when else " (no save time written in this revision)"
         who = times.get(n, {}).get("producer", "")
         if "error" in u:
             events.append(_event("unreadable-revision", f"Revision {n} could not be reconstructed",
@@ -81,14 +101,14 @@ def _pdf_events(facts: dict[str, Any]) -> list[dict[str, Any]]:
         pages = sorted({e["page"] for e in diff.get("added", []) + diff.get("removed", [])})
         for p in pages:
             events.append(_event(
-                "content-change", f"Text on page {p} changed in revision {n}", when=when, source=source,
+                "content-change", f"Text on page {p} changed in revision {n}{unstamped}", when=when, source=source,
                 evidence=CLAIMED, who=who, revision=n, after_signing=after_signing,
                 before=[e["text"] for e in diff.get("removed", []) if e["page"] == p],
                 after=[e["text"] for e in diff.get("added", []) if e["page"] == p]))
         if not pages:
             roles = ", ".join(sorted(u.get("changed_roles", {}))) or "objects"
             label = "signature added" if u.get("signing_revision") else f"{roles} changed, no visible text change"
-            events.append(_event("revision", f"Revision {n}: {label}", when=when, source=source,
+            events.append(_event("revision", f"Revision {n}: {label}{unstamped}", when=when, source=source,
                                  evidence=CLAIMED, who=who, revision=n, after_signing=after_signing))
 
     ends = {t["revision"]: t["end"] for t in rev.get("revision_times", [])}
@@ -96,16 +116,26 @@ def _pdf_events(facts: dict[str, Any]) -> list[dict[str, Any]]:
         field = v.get("field") or "?"
         n = next((k for k, e in ends.items() if v.get("signed_end") is not None
                   and abs(e - v["signed_end"]) <= 4), None)
+        # a time is only as good as the cryptography around it: a broken signature vouches for nothing
+        broken = v.get("intact") is False
+        note = " (the signature does not match the file)" if broken else ""
         if v.get("kind") == "document-timestamp":
             events.append(_event("timestamp", f"Document timestamp '{field}'", when=v.get("timestamp_time"),
-                                 source="RFC 3161 timestamp token", evidence=TIMESTAMPED, revision=n))
+                                 source="RFC 3161 timestamp token" + note,
+                                 evidence=CLAIMED if broken else TIMESTAMPED, revision=n))
         elif v.get("signature_timestamp_time"):
             events.append(_event("signature", f"Signature '{field}'", when=v["signature_timestamp_time"],
-                                 source="RFC 3161 timestamp on the signature", evidence=TIMESTAMPED,
-                                 who=v.get("signer", ""), revision=n))
+                                 source="RFC 3161 timestamp on the signature" + note,
+                                 evidence=CLAIMED if broken else TIMESTAMPED, who=v.get("signer", ""), revision=n))
         elif v.get("signer_reported_time"):
             events.append(_event("signature", f"Signature '{field}'", when=v["signer_reported_time"],
-                                 source="signingTime attribute inside the signature", evidence=SIGNED,
+                                 source="signingTime attribute inside the signature" + note,
+                                 evidence=CLAIMED if broken else SIGNED, who=v.get("signer", ""), revision=n))
+        else:
+            claimed = next((c.get("signing_time_claimed") for c in sig.get("signatures", [])
+                            if v.get("signed_end") is not None and c.get("signed_end") == v["signed_end"]), None)
+            events.append(_event("signature", f"Signature '{field}'", when=claimed,
+                                 source="/M in the signature dictionary", evidence=CLAIMED,
                                  who=v.get("signer", ""), revision=n))
     if not sig.get("validation"):
         for c in sig.get("signatures", []):
@@ -121,26 +151,29 @@ def _pdf_events(facts: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _word_events(facts: dict[str, Any]) -> list[dict[str, Any]]:
+    """One event per run of consecutive tracked changes with the same author and date.
+
+    Word splits text into runs at every formatting boundary, so one edit is often several w:del and w:ins
+    elements. Their texts are joined, so the event reads as the whole deleted and inserted text.
+    """
     changes = facts.get("office_content", {}).get("tracked_changes", [])
+    groups: list[list[dict[str, str]]] = []
+    for c in changes:
+        if groups and groups[-1][0].get("author") == c.get("author") and groups[-1][0].get("date") == c.get("date"):
+            groups[-1].append(c)
+        else:
+            groups.append([c])
     events: list[dict[str, Any]] = []
-    i = 0
-    while i < len(changes):
-        c = changes[i]
-        nxt = changes[i + 1] if i + 1 < len(changes) else None
-        when = iso(parse_xmp_date(c.get("date", "")))
-        common = {"when": when, "source": "w:date on the tracked change", "evidence": CLAIMED,
-                  "who": c.get("author", "")}
-        if (c["type"] == "del" and nxt and nxt["type"] == "ins" and nxt.get("author") == c.get("author")
-                and nxt.get("date") == c.get("date")):
-            events.append(_event("tracked-change", f"Tracked change in {c['part']}", before=[c["text"]],
-                                 after=[nxt["text"]], **common))
-            i += 2
-            continue
-        label = "Tracked deletion" if c["type"] == "del" else "Tracked insertion"
-        events.append(_event("tracked-change", f"{label} in {c['part']}",
-                             before=[c["text"]] if c["type"] == "del" else [],
-                             after=[c["text"]] if c["type"] == "ins" else [], **common))
-        i += 1
+    for g in groups:
+        first = g[0]
+        deleted = " ".join(c["text"] for c in g if c["type"] == "del")
+        inserted = " ".join(c["text"] for c in g if c["type"] == "ins")
+        label = ("Tracked change" if deleted and inserted else
+                 "Tracked deletion" if deleted else "Tracked insertion")
+        events.append(_event("tracked-change", f"{label} in {first['part']}",
+                             when=iso(parse_xmp_date(first.get("date", ""))),
+                             source="w:date on the tracked change", evidence=CLAIMED, who=first.get("author", ""),
+                             before=[deleted] if deleted else [], after=[inserted] if inserted else []))
     return events
 
 
@@ -166,24 +199,33 @@ def _sort(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for _, e in by_revision + others]
 
 
+def _utc(value: str | None) -> tuple[datetime | None, bool]:
+    """(time as UTC-aware, whether the original had no timezone)."""
+    d = _dt(value)
+    if d is None:
+        return None, False
+    return (d, False) if d.tzinfo else (d.replace(tzinfo=timezone.utc), True)
+
+
 def _inconsistencies(events: list[dict[str, Any]], revision_times: list[dict[str, Any]]) -> list[dict[str, Any]]:
     problems = []
-    revs: dict[int, datetime] = {}
-    for t in revision_times:  # the save time each revision claims, revision 1 included
-        d = _aware(_dt(_revision_time(t)[0]))
+    revs: dict[int, tuple[datetime, bool]] = {}
+    for n, (when, _) in _own_times(revision_times).items():  # only times a revision wrote itself
+        d, naive = _utc(when)
         if d:
-            revs[t["revision"]] = d
+            revs[n] = (d, naive)
     ordered = sorted(revs.items())
-    for (ra, da), (rb, db) in zip(ordered, ordered[1:]):
-        if db < da - TOLERANCE:
+    for (ra, (da, na)), (rb, (db, nb)) in zip(ordered, ordered[1:]):
+        slack = NAIVE_TOLERANCE if (na or nb) else TOLERANCE
+        if db < da - slack:
             problems.append({"issue": f"revision {rb} claims an earlier time than revision {ra}",
                              "earlier_revision": [ra, da.isoformat()], "later_revision": [rb, db.isoformat()]})
     for e in events:
         d = _aware(_dt(e["when"]))
         if e["time_evidence"] != TIMESTAMPED or not d or e["revision"] is None:
             continue
-        for r, rd in revs.items():
-            if r <= e["revision"] and rd > d + TOLERANCE:
+        for r, (rd, naive) in revs.items():
+            if r <= e["revision"] and rd > d + (NAIVE_TOLERANCE if naive else TOLERANCE):
                 problems.append({"issue": f"revision {r} claims a time after the trusted timestamp that covers it",
                                  "revision": [r, rd.isoformat()], "timestamp": d.isoformat()})
     return problems
@@ -191,7 +233,10 @@ def _inconsistencies(events: list[dict[str, Any]], revision_times: list[dict[str
 
 def build(facts: dict[str, Any], fmt: str) -> AnalyzerResult:
     res = AnalyzerResult(name="timeline")
-    events = _pdf_events(facts) if fmt == "pdf" else _word_events(facts) if fmt == "ooxml" else []
+    kind = facts.get("office_container", {}).get("kind")
+    covered = fmt == "pdf" or (fmt == "ooxml" and kind == "docx")
+    res.facts["covered"] = covered
+    events = (_pdf_events(facts) if fmt == "pdf" else _word_events(facts)) if covered else []
     events = _sort(events)
     res.facts["events"] = events
     res.facts["untimed"] = sum(1 for e in events if not e["when"])

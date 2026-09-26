@@ -15,12 +15,18 @@ INSTALL_HINT = "PDF reports need reportlab: pip install 'pdf-forensics-kit[repor
 EVIDENCE_LABEL = {
     "claimed": "claimed by the file, can be forged",
     "signed": "inside a signature",
-    "timestamped": "trusted timestamp (RFC 3161)",
+    "timestamped": "RFC 3161 timestamp token, issuer not verified by this tool",
 }
 TIMES_NOTE = ("Rows follow the order of the revisions in the file, which is fixed by its bytes. "
               "Times written into a file are set by the software that saved it and can be changed by anyone who "
-              "edits the file. A signed time is covered by the signer's signature. Only an RFC 3161 timestamp "
-              "from a timestamp authority independently shows that the document existed at that time.")
+              "edits the file. A signed time is covered by the signer's signature, which proves who vouched for it, not "
+              "that the clock was right. An RFC 3161 timestamp shows when the document existed only if its issuing "
+              "authority is trusted; this tool checks that the token matches the file, not who issued it.")
+# Characters of before/after text per table row; longer changes continue in the next row. Excerpts are cut at
+# 200 characters, so one pair always fits, and even text without spaces (wrapped almost per character) stays
+# under a page, so no row ever needs splitting (which would repeat the header mid-page).
+CHARS_PER_ROW = 1000
+EXCERPT = 200
 
 
 def available() -> bool:
@@ -44,13 +50,28 @@ def _when(e: dict[str, Any]) -> str:
 def _change_cell(e: dict[str, Any]) -> str:
     before, after = e.get("before") or [], e.get("after") or []
     if e.get("paired") and len(before) == len(after):  # never drop an unmatched line
-        return "<br/><br/>".join(f"{_t(b, 200)}<br/>&rarr; <b>{_t(a, 200)}</b>" for b, a in zip(before, after))
+        return "<br/><br/>".join(f"{_t(b, EXCERPT)}<br/>&rarr; <b>{_t(a, EXCERPT)}</b>" for b, a in zip(before, after))
     parts = []
     if before:
-        parts.append("<i>Before:</i><br/>" + "<br/>".join(_t(b, 200) for b in before))
+        parts.append("<i>Before:</i><br/>" + "<br/>".join(_t(b, EXCERPT) for b in before))
     if after:
-        parts.append("<i>After:</i><br/><b>" + "<br/>".join(_t(a, 200) for a in after) + "</b>")
+        parts.append("<i>After:</i><br/><b>" + "<br/>".join(_t(a, EXCERPT) for a in after) + "</b>")
     return "<br/>".join(parts) or "-"
+
+
+def _chunks(e: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split a long change into rows by text length, so no single table row outgrows a page."""
+    before, after = e.get("before") or [], e.get("after") or []
+    longest = max(len(before), len(after), 1)
+    starts, used = [0], 0
+    for i in range(longest):
+        size = sum(min(len(x[i]), EXCERPT) for x in (before, after) if i < len(x))
+        if used and used + size > CHARS_PER_ROW:
+            starts.append(i)
+            used = 0
+        used += size
+    bounds = zip(starts, starts[1:] + [longest])
+    return [{**e, "before": before[a:b], "after": after[a:b]} for a, b in bounds]
 
 
 def write_pdf_report(report: dict[str, Any], path: str | Path) -> None:
@@ -94,6 +115,9 @@ def write_pdf_report(report: dict[str, Any], path: str | Path) -> None:
     if timeline is None:
         story.append(Paragraph("<b>Timeline unavailable:</b> the timeline could not be built for this document.",
                                body))
+    elif timeline.get("covered") is False:
+        story.append(Paragraph("Edit timeline is not available for this format (only PDF and Word documents).",
+                               body))
     elif not timeline.get("events"):
         story.append(Paragraph("No edits, signatures or recorded save events were found.", body))
     else:
@@ -105,8 +129,12 @@ def write_pdf_report(report: dict[str, Any], path: str | Path) -> None:
             source = _t(e.get("time_source"))
             if e.get("time_evidence"):
                 source += f"<br/><i>{_t(EVIDENCE_LABEL.get(e['time_evidence'], e['time_evidence']))}</i>"
-            rows.append([Paragraph(_t(_when(e)), small), Paragraph(source or "-", small),
-                         Paragraph(what, small), Paragraph(_change_cell(e), small)])
+            for i, part in enumerate(_chunks(e)):
+                first = i == 0
+                rows.append([Paragraph(_t(_when(e)) if first else "", small),
+                             Paragraph((source or "-") if first else "", small),
+                             Paragraph(what if first else "<i>(continued)</i>", small),
+                             Paragraph(_change_cell(part), small)])
         tl = Table(rows, colWidths=[30 * mm, 38 * mm, 42 * mm, 60 * mm], repeatRows=1)
         tl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
                                 ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),

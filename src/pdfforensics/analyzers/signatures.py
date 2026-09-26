@@ -22,6 +22,7 @@ try:  # optional dependency
     from pyhanko.sign.fields import SigSeedSubFilter, enumerate_sig_fields
     from asn1crypto import cms
     from pyhanko.sign.validation import EmbeddedPdfSignature, validate_pdf_signature, validate_pdf_timestamp
+    from pyhanko.sign.validation.generic_cms import extract_self_reported_ts
     from pyhanko.sign.validation.pdf_embedded import extract_contents, extract_signer_info
     from pyhanko_certvalidator import ValidationContext
 
@@ -147,7 +148,11 @@ def _pyhanko_validate(data: bytes, password: str = "") -> list[dict[str, Any]]:
                 r["signed_end"] = br[2] + br[3]
             except Exception:
                 pass
-            reported = getattr(st, "signer_reported_dt", None)
+            # pyHanko's signer_reported_dt falls back to /M; only the signed signingTime attribute counts here
+            try:
+                reported = extract_self_reported_ts(emb.signer_info)
+            except Exception:
+                reported = None
             if reported is not None:
                 r["signer_reported_time"] = reported.isoformat()
             tsv = getattr(st, "timestamp_validity", None)

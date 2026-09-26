@@ -157,3 +157,61 @@ def test_backdated_edit_after_signing_stays_after_the_signature(analyze):
     kinds = [e["kind"] for e in _events(r) if e["kind"] in ("signature", "content-change")]
     assert kinds == ["signature", "content-change"]
     assert "timeline.inconsistent-times" in ids(r)
+
+
+# ---------------------------------------------------------------- final review findings
+
+def test_revision_that_did_not_write_a_save_time_claims_none(analyze):
+    """An update that leaves /Info alone inherits the earlier /ModDate; that is not its own save time."""
+    base = pdfgen.build()
+    upd = pdfgen.append_update(base, {pdfgen.content_objnum(base): pdfgen.stream_obj(
+        pdfgen.text_stream("Invoice 2026-001", "Total: 900 SEK"))})
+    [e] = _events(analyze(upd), "content-change")
+    assert e["when"] is None
+    assert "no save time" in e["what"].lower() or "no save time" in e["time_source"].lower()
+
+
+@needs_pyhanko
+def test_time_in_a_broken_signature_is_only_claimed(analyze):
+    signed = pdfgen.sign(pdfgen.build())
+    i = signed.find(b"Total: 100 SEK")
+    broken = signed[:i] + b"Total: 999 SEK" + signed[i + 14:]
+    [sig] = _events(analyze(broken), "signature")
+    assert sig["time_evidence"] == "claimed"
+
+
+@needs_pyhanko
+def test_signing_time_without_the_signed_attribute_is_only_claimed(analyze, monkeypatch):
+    from pdfforensics.analyzers import signatures
+    monkeypatch.setattr(signatures, "extract_self_reported_ts", lambda signer_info: None)
+    r = analyze(pdfgen.sign(pdfgen.build()))
+    assert "signer_reported_time" not in r["facts"]["signatures"]["validation"][0]
+    [sig] = _events(r, "signature")
+    assert sig["time_evidence"] == "claimed" and "/M" in sig["time_source"]
+
+
+SPLIT_RUNS = ('<w:p>'
+              '<w:del w:id="1" w:author="Anna Andersson" w:date="2026-03-02T09:15:00Z">'
+              '<w:r><w:delText>Total </w:delText></w:r></w:del>'
+              '<w:del w:id="2" w:author="Anna Andersson" w:date="2026-03-02T09:15:00Z">'
+              '<w:r><w:rPr><w:b/></w:rPr><w:delText>100 SEK</w:delText></w:r></w:del>'
+              '<w:ins w:id="3" w:author="Anna Andersson" w:date="2026-03-02T09:15:00Z">'
+              '<w:r><w:t>Sum </w:t></w:r></w:ins>'
+              '<w:ins w:id="4" w:author="Anna Andersson" w:date="2026-03-02T09:15:00Z">'
+              '<w:r><w:rPr><w:b/></w:rPr><w:t>900 SEK</w:t></w:r></w:ins></w:p>')
+
+
+def test_word_change_split_over_runs_is_one_change(analyze):
+    r = analyze(officegen.build("docx", main=officegen.word_body(SPLIT_RUNS)), name="doc.docx")
+    [e] = _events(r, "tracked-change")
+    assert (e["before"], e["after"]) == (["Total 100 SEK"], ["Sum 900 SEK"])
+
+
+def test_spreadsheet_timeline_is_marked_not_covered(analyze):
+    r = analyze(officegen.build("xlsx"), name="book.xlsx")
+    assert r["facts"]["timeline"]["covered"] is False
+
+
+def test_backdated_revision_with_a_naive_date_is_flagged(analyze):
+    r = analyze(_edited_with_moddate("D:20200101000000"))
+    assert "timeline.inconsistent-times" in ids(r)

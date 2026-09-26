@@ -99,7 +99,7 @@ def cmd_analyze(a: argparse.Namespace) -> int:
     if a.pdf_report and reports:
         from pdfforensics import pdfreport
         target = Path(a.pdf_report)
-        if len(reports) == 1 and not target.is_dir():
+        if len(files) == 1 and not target.is_dir():
             pdfreport.write_pdf_report(reports[0], target)
         else:
             for r in reports:
