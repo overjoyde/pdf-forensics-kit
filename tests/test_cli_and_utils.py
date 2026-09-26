@@ -51,7 +51,8 @@ def test_cli_batch_out_dir(tmp_path, capsys):
     (src / "c.pdf").write_bytes(b"not a pdf")
     out = tmp_path / "out"
     assert main(["analyze", str(src), "--out-dir", str(out)]) == 0
-    assert (out / "a.forensics.json").exists() and (out / "b.forensics.md").exists()
+    assert len(list(out.glob("a.pdf.*.forensics.json"))) == 1
+    assert len(list(out.glob("b.pdf.*.forensics.md"))) == 1
     summary = (out / "batch-summary.md").read_text()
     assert "not-analysed" in summary and "a.pdf" in summary
 

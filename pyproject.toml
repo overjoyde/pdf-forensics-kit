@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf-forensics-kit"
-version = "0.2.0"
-description = "Explainable, signature-aware PDF tampering and provenance analysis."
+version = "0.3.0"
+description = "Explainable, signature-aware tampering and provenance analysis for PDF and Office (DOCX/XLSX/PPTX) documents."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

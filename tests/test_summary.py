@@ -72,7 +72,8 @@ def test_cli_out_dir_writes_summary_files(tmp_path):
     (src / "b.pdf").write_bytes(_tampered())
     out = tmp_path / "out"
     assert main(["analyze", str(src), "--out-dir", str(out)]) == 0
-    assert (out / "b.summary.md").read_text().startswith("# Summary: b.pdf")
+    (summary_file,) = out.glob("b.pdf.*.summary.md")
+    assert summary_file.read_text().startswith("# Summary: b.pdf")
     batch = (out / "batch-summary.md").read_text()
     assert "## Executive summary" in batch and "b.pdf: `significant-indicators`" in batch
 

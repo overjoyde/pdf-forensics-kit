@@ -167,6 +167,7 @@ def analyze(doc: Document) -> AnalyzerResult:
             ph = []
             res.facts["pyhanko_error"] = f"{type(exc).__name__}: {exc}"
         res.facts["validation"] = ph
+        doc._cache["pyhanko_results"] = ph  # lets the pdfsig analyser cross-check
         usage_rights = [c for c in cov if c["purpose"] == "usage-rights"]
         if usage_rights:
             res.findings.append(Finding(

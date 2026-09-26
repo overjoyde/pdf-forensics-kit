@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pdfforensics import __version__, document, render, summary
 from pdfforensics.compare import compare, compare_markdown
-from pdfforensics.engine import analyze_file
+from pdfforensics.engine import SUPPORTED_SUFFIXES, analyze_file
 from pdfforensics.model import Severity
 
 LEVELS = {s.label: s for s in Severity}
@@ -29,7 +29,8 @@ def _collect(paths: list[str], recursive: bool) -> list[Path]:
     for p in map(Path, paths):
         if p.is_dir():
             it = p.rglob("*") if recursive else p.iterdir()
-            files += sorted(x for x in it if x.is_file() and x.suffix.lower() == ".pdf")
+            files += sorted(x for x in it if x.is_file() and not x.is_symlink()
+                            and x.suffix.lower().lstrip(".") in SUPPORTED_SUFFIXES)
         else:
             files.append(p)
     return files
@@ -37,7 +38,13 @@ def _collect(paths: list[str], recursive: bool) -> list[Path]:
 
 def _options(a: argparse.Namespace) -> document.Options:
     return document.Options(password=a.password or "", max_pages=a.max_pages, max_objects=a.max_objects,
-                            max_revisions=a.max_revisions)
+                            max_revisions=a.max_revisions, external_tools=not a.no_external_tools,
+                            online_revocation=a.online_revocation)
+
+
+def report_basename(r: dict) -> str:
+    """<file name>.<sha256 prefix> - unique even for same-named files from different folders."""
+    return f"{r['file']['name']}.{r['file']['sha256'][:12]}"
 
 
 def _write(target: str | None, text: str) -> None:
@@ -66,10 +73,10 @@ def cmd_analyze(a: argparse.Namespace) -> int:
         out = Path(a.out_dir)
         out.mkdir(parents=True, exist_ok=True)
         for r in reports:
-            stem = Path(r["file"]["name"]).stem
-            (out / f"{stem}.forensics.json").write_text(render.to_json(r) + "\n", encoding="utf-8")
-            (out / f"{stem}.forensics.md").write_text(report_md(r, a) + "\n", encoding="utf-8")
-            (out / f"{stem}.summary.md").write_text(_summary_doc([r], []) + "\n", encoding="utf-8")
+            base = report_basename(r)
+            (out / f"{base}.forensics.json").write_text(render.to_json(r) + "\n", encoding="utf-8")
+            (out / f"{base}.forensics.md").write_text(report_md(r, a) + "\n", encoding="utf-8")
+            (out / f"{base}.summary.md").write_text(_summary_doc([r], []) + "\n", encoding="utf-8")
         if len(files) > 1:
             (out / "batch-summary.md").write_text(render.batch_markdown(reports, failures), encoding="utf-8")
     payload = reports[0] if len(reports) == 1 and not failures else {
@@ -170,16 +177,22 @@ def cmd_extract(a: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pdfforensics", description="Explainable PDF tampering and provenance analysis.")
+    p = argparse.ArgumentParser(prog="pdfforensics",
+                                description="Explainable tampering and provenance analysis for PDF and Office documents.")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--password", help="user password for encrypted PDFs")
     common.add_argument("--max-pages", type=int, default=500)
     common.add_argument("--max-objects", type=int, default=50_000)
     common.add_argument("--max-revisions", type=int, default=50)
+    common.add_argument("--no-external-tools", action="store_true",
+                        help="do not run optional local validators (Poppler pdfsig) even if installed")
+    common.add_argument("--online-revocation", action="store_true",
+                        help="let pdfsig contact OCSP responders to check revocation (network access; off by default)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    an = sub.add_parser("analyze", parents=[common], help="analyse one or more PDFs (files or directories)")
+    an = sub.add_parser("analyze", parents=[common],
+                        help="analyse PDF / DOCX / XLSX / PPTX files or directories")
     an.add_argument("paths", nargs="+")
     an.add_argument("-r", "--recursive", action="store_true", help="recurse into directories")
     an.add_argument("--json", metavar="FILE", help="write JSON report ('-' for stdout)")
@@ -203,7 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--json", metavar="FILE", help="also write the summaries as JSON ('-' for stdout)")
     sm.set_defaults(func=cmd_summarize)
 
-    ex = sub.add_parser("extract-revisions", parents=[common], help="write every revision as a standalone PDF")
+    ex = sub.add_parser("extract-revisions", parents=[common],
+                        help="write every revision of a PDF as a standalone PDF")
     ex.add_argument("file")
     ex.add_argument("--out-dir", required=True)
     ex.set_defaults(func=cmd_extract)

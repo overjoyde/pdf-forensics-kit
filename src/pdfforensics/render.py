@@ -42,8 +42,10 @@ def _evidence_lines(ev: dict[str, Any], limit: int = 12) -> list[str]:
 
 def report_markdown(r: dict[str, Any], include_info: bool = True) -> str:
     f, v, t = r["file"], r["verdict"], r["tool"]
+    fmt = f.get("format", "pdf")
+    title = "PDF" if fmt == "pdf" else "Document"
     out = [
-        f"# PDF forensic report: {f['name']}",
+        f"# {title} forensic report: {f['name']}",
         "",
         f"**Verdict:** `{v['label']}` (level: {v['level']}){'' if v['complete'] else ' - INCOMPLETE, see errors'}",
         "",
@@ -55,11 +57,28 @@ def report_markdown(r: dict[str, Any], include_info: bool = True) -> str:
         f"| SHA-256 | `{f['sha256']}` |",
         f"| Analysed (UTC) | {f['analysed_at']} |",
         f"| Tool | {t['name']} {t['version']} (pikepdf {t['pikepdf']}, qpdf {t['qpdf']}, "
-        f"pypdf {t['pypdf']}, pyHanko {t['pyhanko'] or 'not installed'}) |",
+        f"pypdf {t['pypdf']}, pyHanko {t['pyhanko'] or 'not installed'}, "
+        f"pdfsig {t.get('pdfsig') or 'not used'}) |",
     ]
+    fp = r["facts"].get("fingerprint", {})
+    if fmt != "pdf":
+        meta = r["facts"].get("office_metadata", {})
+        core, app = meta.get("core", {}), meta.get("app", {})
+        out += [
+            f"| Format | {(f.get('kind') or fmt).upper()} |",
+            f"| Application | {_md_escape(app.get('Application') or '-')} {_md_escape(app.get('AppVersion') or '')} |",
+            f"| Author / last saved by | {_md_escape(core.get('creator') or '-')} / "
+            f"{_md_escape(core.get('lastModifiedBy') or '-')} |",
+            f"| Created / modified | {core.get('created', '-')} / {core.get('modified', '-')} |",
+            f"| Pipeline fingerprint | `{fp.get('pipeline_hash', '-')}` |",
+            "",
+            summary_markdown(r.get("summary") or summarize(r)),
+            "## Findings",
+            "",
+        ]
+        return _findings_md(r, out, include_info)
     rev = r["facts"].get("revisions", {})
     struct = r["facts"].get("structure", {})
-    fp = r["facts"].get("fingerprint", {})
     sig = r["facts"].get("signatures", {})
     out += [
         f"| Pages | {struct.get('pages', '?')} |",
@@ -74,6 +93,11 @@ def report_markdown(r: dict[str, Any], include_info: bool = True) -> str:
         "## Findings",
         "",
     ]
+    return _findings_md(r, out, include_info)
+
+
+def _findings_md(r: dict[str, Any], out: list[str], include_info: bool) -> str:
+    v = r["verdict"]
     shown = [x for x in r["findings"] if include_info or x["severity"] != "info"]
     if not shown:
         out.append("_No findings._")
@@ -98,7 +122,7 @@ def report_markdown(r: dict[str, Any], include_info: bool = True) -> str:
 
 
 def batch_markdown(reports: list[dict[str, Any]], failures: list[dict[str, str]]) -> str:
-    out = ["# PDF forensic batch summary", "",
+    out = ["# Document forensic batch summary", "",
            batch_summary_markdown(batch_summary(reports, failures)),
            "## Documents", "",
            "| File | Verdict | Revisions | Signatures | Top findings | Pipeline |", "|---|---|---|---|---|---|"]

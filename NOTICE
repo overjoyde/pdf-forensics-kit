@@ -5,3 +5,7 @@ Inspired by pdf-forensics-toolkit (https://github.com/Rlahuerta/pdf-forensics-to
 Copyright (c) Rlahuerta, MIT License. Ideas reused: revision text recovery, source
 fingerprinting, active-content and hidden-content checks, lists of known PDF producers.
 No upstream source files were copied; all code in this repository was written anew.
+
+The Office Open XML analyser, evidence-capture hardening, pdfsig output handling, agent skill and
+methodology notes are adapted from the author's own document-forensics-agent (MIT), which also drew
+on DocForensics (https://github.com/substrateagnostic/doc-forensics, MIT) for ideas.

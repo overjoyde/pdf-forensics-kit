@@ -44,7 +44,34 @@ ACTIONS: dict[str, str] = {
     "active.xfa": "Render the form in Adobe Reader and in another viewer; XFA content can differ between viewers.",
     "active.submit-or-import": "Check where form data is sent before filling in or submitting the form.",
     "structure.data-after-eof": "Extract the bytes after the final %%EOF for separate inspection.",
+    "pdfsig.integrity-failure": "Treat the document as altered after signing. Obtain a fresh copy directly from the signer.",
+    "pdfsig.certificate-revoked": ("Check whether the certificate was revoked before the signing time. Escalate to "
+                                   "the approved trust service."),
+    "signature.validators-disagree": "Have the signature examined manually; the two validators disagree.",
+    "input.extension-mismatch": "Ask why the file was renamed, and obtain it with its original name and format.",
+    "office.tracked-changes": ("Open the document with 'All Markup' shown and compare the deleted text in the "
+                               "evidence with the visible version."),
+    "office.hidden-text": "Show hidden text (Word: File > Options > Display) and compare it with the printed version.",
+    "office.very-hidden-sheets": ("Inspect the very-hidden sheets (VBA editor or a ZIP viewer) and check whether "
+                                  "visible figures depend on them."),
+    "office.macros": "Do not enable macros. Analyse them statically (olevba) in an isolated environment.",
+    "office.remote-template": "Do not open the document online. Block the template URL and analyse it in isolation.",
+    "office.dde-field": "Do not update fields. Analyse the document in isolation.",
+    "office.external-content": "Review the external targets before letting Office load them.",
+    "office.embedded-objects": "Extract embedded objects in isolation and review them as separate evidence.",
+    "office.modified-before-created": "Verify the document dates with the author or document-management system.",
+    "office.not-an-office-package": "Obtain the original file from the source system; this is not an Office document.",
 }
+
+# Stronger verification sources, in descending order of evidential value. Used as the closing
+# recommendation whenever a document needs attention, because structural analysis alone rarely settles it.
+VERIFICATION_HIERARCHY = [
+    "a valid digital signature from a trusted certificate covering the relevant version",
+    "a known-good hash from the issuing system or an immutable archive",
+    "the source system's audit log or version history",
+    "an independently obtained copy from the issuer",
+    "internal metadata and structure (what this report analyses)",
+]
 
 
 def _count(findings: list[dict[str, Any]]) -> Counter:
@@ -80,7 +107,22 @@ def _highlight(f: dict[str, Any]) -> str | None:
         return "tool(s): " + ", ".join(ev.get("tools", []))
     if f["id"] in ("metadata.modified-before-created", "metadata.info-xmp-date-mismatch"):
         return f"difference {ev.get('difference')}"
-    for key in ("files", "tools", "layers", "uris"):
+    if f["id"] == "office.tracked-changes":
+        def strip(xs):
+            return [x.split(": ", 1)[-1] for x in xs[:2]]
+        parts = []
+        if ev.get("deleted_text"):
+            parts.append("deleted: " + " / ".join(f'"{t}"' for t in strip(ev["deleted_text"])))
+        if ev.get("inserted_text"):
+            parts.append("inserted: " + " / ".join(f'"{t}"' for t in strip(ev["inserted_text"])))
+        if ev.get("authors"):
+            parts.append("by " + ", ".join(ev["authors"][:3]))
+        return "; ".join(parts) or None
+    if f["id"] == "office.hidden-text" and ev.get("text"):
+        return "hidden: " + " / ".join(f'"{t.split(": ", 1)[-1]}"' for t in ev["text"][:2])
+    if ev.get("relationships"):
+        return "targets: " + ", ".join(r.get("target", "") for r in ev["relationships"][:3])
+    for key in ("files", "tools", "layers", "uris", "sheets", "parts"):
         if ev.get(key):
             vals = ev[key]
             return f"{key}: " + ", ".join(str(v) for v in vals[:3]) + (" ..." if len(vals) > 3 else "")
@@ -91,6 +133,10 @@ def _highlight(f: dict[str, Any]) -> str | None:
 
 def _profile(r: dict[str, Any]) -> str:
     facts = r.get("facts", {})
+    if r["file"].get("format") == "ooxml":
+        return _office_profile(r)
+    if r["file"].get("format") == "ole":
+        return "Legacy binary Office file (OLE2); only basic checks were possible."
     st, rev, sig, fp = (facts.get(k, {}) for k in ("structure", "revisions", "signatures", "fingerprint"))
     pages = st.get("pages", "?")
     origin = fp.get("producer_family") or (fp.get("producer") or "unknown software")
@@ -111,7 +157,30 @@ def _profile(r: dict[str, Any]) -> str:
     return "; ".join(parts) + "."
 
 
+def _office_profile(r: dict[str, Any]) -> str:
+    facts = r.get("facts", {})
+    kind = (r["file"].get("kind") or "office").upper()
+    meta = facts.get("office_metadata", {})
+    app = meta.get("app", {})
+    core = meta.get("core", {})
+    content = facts.get("office_content", {})
+    parts = [f"{kind} document produced by {app.get('Application') or 'unknown software'}"
+             + (f" {app['AppVersion']}" if app.get("AppVersion") else "")]
+    who = core.get("creator")
+    last = core.get("lastModifiedBy")
+    if who or last:
+        parts.append(f"author '{who or '-'}', last saved by '{last or '-'}'")
+    if core.get("created") or core.get("modified"):
+        parts.append(f"created {core.get('created', '?')}, modified {core.get('modified', '?')}")
+    rev = content.get("tracked_insertions", 0) + content.get("tracked_deletions", 0)
+    parts.append(f"{rev} pending tracked change(s)" if rev else "no pending tracked changes")
+    parts.append("contains macros" if facts.get("office_active", {}).get("macros") else "no macros")
+    return "; ".join(parts) + "."
+
+
 def _ruled_out(r: dict[str, Any]) -> list[str]:
+    if r["file"].get("format") in ("ooxml", "ole"):
+        return _office_ruled_out(r)
     ids = {f["id"] for f in r["findings"]}
     cats = {f["category"] for f in r["findings"] if f["severity"] != "info"}
     facts = r.get("facts", {})
@@ -134,6 +203,25 @@ def _ruled_out(r: dict[str, Any]) -> list[str]:
     return out
 
 
+def _office_ruled_out(r: dict[str, Any]) -> list[str]:
+    if r["file"].get("format") == "ole":
+        return []
+    ids = {f["id"] for f in r["findings"]}
+    cats = {f["category"] for f in r["findings"] if f["severity"] != "info"}
+    out = []
+    if "office.tracked-changes" not in ids:
+        out.append("No pending tracked changes (no deleted text left in the file).")
+    if "content" not in cats:
+        out.append("No hidden text, hidden or very-hidden sheets, or hidden slides.")
+    if "active-content" not in cats:
+        out.append("No macros, DDE fields, remote templates, external content or embedded objects.")
+    if "metadata" not in cats:
+        out.append("Document properties (dates, editing time) are consistent.")
+    if "structure" not in cats:
+        out.append("Package structure is sound: consistent manifest, no duplicate or disguised parts.")
+    return out
+
+
 def _limitations(r: dict[str, Any]) -> list[str]:
     out = []
     if not r["verdict"].get("complete", True):
@@ -148,6 +236,10 @@ def _limitations(r: dict[str, Any]) -> list[str]:
         out.append("Older revisions beyond --max-revisions were not compared.")
     if r.get("facts", {}).get("signatures", {}).get("signature_count") and not r["tool"].get("pyhanko"):
         out.append("pyHanko is not installed, so signatures were checked structurally only.")
+    if "office.xml-signature" in ids:
+        out.append("Office XML signatures were detected but not cryptographically validated by this tool.")
+    if r.get("facts", {}).get("office_container", {}).get("parts_not_parsed"):
+        out.append("Some package parts could not be parsed safely and were skipped.")
     out.append("Structural analysis cannot prove that the content is true; a clean result is not proof of authenticity.")
     return out
 
@@ -185,6 +277,10 @@ def summarize(r: dict[str, Any]) -> dict[str, Any]:
     if not actions:
         actions.append("No action required from the structural analysis. Apply normal business verification "
                        "(check with the issuer, and compare with known genuine documents) as usual.")
+    else:
+        actions = actions[:5]
+        actions.append("To settle the question, use a stronger source than this analysis, in this order: "
+                       + "; ".join(VERIFICATION_HIERARCHY[:4]) + ".")
 
     return {
         "headline": headline,
@@ -194,7 +290,7 @@ def summarize(r: dict[str, Any]) -> dict[str, Any]:
         "document": _profile(r),
         "key_findings": key,
         "ruled_out": _ruled_out(r),
-        "recommended_actions": actions[:6],
+        "recommended_actions": actions,
         "limitations": _limitations(r),
         "sha256": r["file"]["sha256"],
     }

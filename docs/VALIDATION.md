@@ -40,3 +40,23 @@ One file (`unreadablemetadata.pdf`) is deliberately broken. qpdf refuses it, and
 4. **Signatures pyHanko skips** (legacy sub-filters) produced no finding. They now yield `signature.not-validated`.
 
 Each fix has a regression test in `tests/test_analysis.py`.
+
+## Office documents (v0.3.0, 2026-09-26)
+
+Corpus: 11 public Office files. 10 are from the [Apache POI test data](https://github.com/apache/poi/tree/trunk/test-data)
+(Word 2007/LibreOffice DOCX, macro-enabled DOCM/XLSM, XLSX with tables and data, a PPTX). The eleventh is
+Apple Numbers' bundled `FontTemplate.xlsx`.
+
+| File | Verdict | Findings |
+|---|---|---|
+| 7 ordinary DOCX/XLSX/PPTX files | `no-indicators` | Info only (comments, hyperlinks). One PPTX has `zero-edit-time` (low confidence, so it does not raise the verdict) |
+| `SimpleMacro.docm`, `SimpleMacro.xlsm` | `significant-indicators` | `office.macros` (true positive, correct extension, so no renaming flag) |
+| `delins.docx` | `review-recommended` | `office.tracked-changes`: 36 pending changes, with the deleted text recovered (true positive) |
+
+Synthetic cases in `tests/test_office.py` cover what public samples rarely contain: deleted invoice amounts in
+tracked changes, hidden text, DDE fields, remote-template injection, macros in a `.docx`, very-hidden sheets,
+hidden slides, duplicate and path-traversal parts, XML entity expansion (refused), and extension mismatches.
+
+Poppler `pdfsig` 26.08 was checked against pyHanko on intact, post-signing-edited and byte-altered signed PDFs.
+Both validators agree in every case: intact, "not total document signed" plus an intact signed range, and
+digest mismatch.

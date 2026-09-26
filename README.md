@@ -1,9 +1,12 @@
 # pdf-forensics-kit
 
-Explainable, signature-aware PDF tampering and provenance analysis. It is a rewrite inspired by
+Explainable, signature-aware tampering and provenance analysis for **PDF and Office documents
+(DOCX / XLSX / PPTX)**. It is a rewrite inspired by
 [`Rlahuerta/pdf-forensics-toolkit`](https://github.com/Rlahuerta/pdf-forensics-toolkit) (MIT).
-See [`docs/ANALYSIS.md`](docs/ANALYSIS.md) for what was kept, the defects found upstream, and what changed,
-and [`docs/VALIDATION.md`](docs/VALIDATION.md) for results on 21 public PDFs.
+
+- [`docs/ANALYSIS.md`](docs/ANALYSIS.md): what was kept, the defects found upstream, and what changed.
+- [`docs/VALIDATION.md`](docs/VALIDATION.md): results on public PDF and Office samples.
+- [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md): evidence handling, the findings model, and stronger verification sources.
 
 **What it answers**
 
@@ -12,6 +15,9 @@ and [`docs/VALIDATION.md`](docs/VALIDATION.md) for results on 21 public PDFs.
 - Does it hide content: invisible text, print-only annotations, layers hidden by default, appended data?
 - Does it contain active content (JavaScript, launch/submit actions, attachments, XFA)?
 - Which software pipeline produced it, and do documents that claim the same source match?
+- For Word/Excel/PowerPoint: are there pending tracked changes, with the **deleted text still in the file**? Is
+  there hidden text, are there hidden or very-hidden sheets or hidden slides? Does it contain macros, DDE fields,
+  remote templates, external content or embedded objects? Is the package disguised or malformed?
 
 Every result is a **finding** with severity, confidence, evidence and possible benign explanations.
 The verdict rule is printed in every report. There are no hidden point totals.
@@ -28,6 +34,12 @@ python3 -m venv .venv
 ```
 
 Runtime dependencies: `pikepdf` (MPL-2.0), `pypdf` (BSD), and optionally `pyhanko` (MIT). There is no AGPL code and nothing phones home.
+Office analysis uses only the Python standard library.
+
+**Optional second signature validator:** if Poppler's `pdfsig` is installed (`brew install poppler`, or
+`apt install poppler-utils`), signed PDFs are also checked by it. Signature integrity, certificate trust and
+revocation are reported separately, and the result is cross-checked against pyHanko. `pdfsig` runs offline
+(`-no-ocsp`) unless you pass `--online-revocation`. Disable it with `--no-external-tools`.
 
 ## Use
 
@@ -35,7 +47,7 @@ Runtime dependencies: `pikepdf` (MPL-2.0), `pypdf` (BSD), and optionally `pyhank
 # one file -> Markdown on stdout
 .venv/bin/pdfforensics analyze invoice.pdf
 
-# a folder -> JSON + Markdown per file, plus a batch summary grouped by production pipeline
+# a folder of PDFs / DOCX / XLSX / PPTX -> JSON + Markdown + summary per file, plus a batch summary
 .venv/bin/pdfforensics analyze ./case-123 -r --out-dir ./case-123-reports
 
 # plain-language summary when the analysis is done (stdout, or a file)
@@ -55,7 +67,10 @@ Runtime dependencies: `pikepdf` (MPL-2.0), `pypdf` (BSD), and optionally `pyhank
 .venv/bin/pdfforensics compare claimed.pdf reference.pdf
 ```
 
-Inputs are never modified. Reports contain SHA-256, size, UTC timestamp and all library versions (chain of custody).
+Inputs are never modified. The file is captured once without following symlinks, hashed, and analysed
+from those bytes; a file that changes while it is read is rejected. Reports contain SHA-256, size, UTC
+timestamp and all library/tool versions, and are named `<file>.<sha256-prefix>.forensics.{json,md}` and
+`.summary.md`, so same-named files never overwrite each other.
 
 ### Summary
 
@@ -94,7 +109,13 @@ Rule: effective severity = severity, one step lower when confidence is low. Verd
 | metadata | `modified-before-created`, `future-date`, `info-xmp-date-mismatch`, `producer-mismatch`, `editor-tool`, `manipulation-library`, `xmp-history`, `absent` |
 | content | `invisible-text`, `ocr-text-layer`, `print-only-annotations`, `hidden-annotations`, `layer-view-print-differs`, `layers-hidden-by-default` |
 | active_content | `javascript`, `launch-action`, `submit-or-import`, `remote-goto`, `multimedia`, `xfa`, `embedded-files`, `e-invoice-attachment`, `additional-actions`, `uris` |
+| pdfsig (optional) | `integrity-ok`, `integrity-failure`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
 | fingerprint | facts only: producer family, pipeline hash, fonts, filters, xref style |
+| input (all formats) | `extension-mismatch`, `changed-after-capture` |
+| office container | `not-an-office-package`, `extension-mismatch`, `duplicate-parts`, `unsafe-paths`, `encrypted-parts`, `compression-bomb`, `resource-limit`, `opc-nonconformant`, `parts-not-parsed`, `legacy-format` |
+| office metadata | `modified-before-created`, `printed-before-created`, `future-date`, `different-editor`, `zero-edit-time`, `remote-template-name`, `metadata-absent` |
+| office content | `tracked-changes` (with deleted/inserted text and authors), `track-changes-enabled`, `hidden-text`, `very-hidden-sheets`, `hidden-sheets`, `external-workbook-links`, `hidden-slides`, `comments` |
+| office active content | `macros` (flags macros in macro-free extensions), `remote-template`, `dde-field`, `external-content`, `embedded-objects`, `activex`, `hyperlinks`, `xml-signature` (detected, not validated) |
 
 ## Tests
 
@@ -102,8 +123,15 @@ Rule: effective severity = severity, one step lower when confidence is low. Verd
 .venv/bin/python -m pytest
 ```
 
-All fixtures are generated synthetically at test time (`tests/pdfgen.py`), including a signed
-document built with a throw-away self-signed certificate. The repository contains no real documents.
+All fixtures are generated synthetically at test time (`tests/pdfgen.py`, `tests/officegen.py`),
+including a signed document built with a throw-away self-signed certificate. The repository contains no
+real documents. The `pdfsig` integration tests run only when Poppler is installed.
+
+## Agent skill
+
+`.agents/skills/document-forensics/` contains a skill for coding agents (Codex, opencode and similar).
+It covers how to run the CLI safely, and how to report results without over-interpreting them: a
+`no-indicators` result is never "authentic".
 
 ## Handling sensitive documents
 

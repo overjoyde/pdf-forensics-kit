@@ -21,6 +21,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+      - name: Install Poppler (optional pdfsig validator)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update -q && sudo apt-get install -y -q poppler-utils
       - run: python -m pip install -e ".[signatures,dev]"
       - run: python -m pytest -W ignore::DeprecationWarning
       - name: Without pyHanko (optional dependency)
