@@ -111,7 +111,7 @@ def _summary_doc(reports: list[dict], failures: list[dict]) -> str:
     """Stand-alone summary document: an executive summary for batches, then one summary per file."""
     parts = []
     if len(reports) + len(failures) > 1:
-        parts += ["# PDF forensic summary", "",
+        parts += ["# Document forensic summary", "",
                   summary.batch_summary_markdown(summary.batch_summary(reports, failures))]
     for r in reports:
         s = r.get("summary") or summary.summarize(r)

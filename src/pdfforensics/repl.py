@@ -19,8 +19,10 @@ from pdfforensics import __version__, render
 from pdfforensics.document import InputError, Options
 
 HISTORY_FILE = Path.home() / ".pdfforensics_history"
-TAGLINE = "PDF & Office tampering analysis - local, read-only"
 SEV_COLOURS = {"CRITICAL": "1;97;41", "HIGH": "1;31", "MEDIUM": "1;33", "LOW": "36", "INFO": "2"}
+VERDICT_CHIPS = {"strong-indicators": "1;97;48;5;160", "significant-indicators": "1;97;48;5;196",
+                 "review-recommended": "1;30;48;5;214", "minor-anomalies": "1;30;48;5;80",
+                 "no-indicators": "1;30;48;5;42"}
 VERDICT_COLOURS = {"strong-indicators": "1;97;41", "significant-indicators": "1;31",
                    "review-recommended": "1;33", "minor-anomalies": "36", "no-indicators": "1;32"}
 
@@ -45,22 +47,137 @@ def whole_line_path(line: str) -> str | None:
 
 # ------------------------------------------------------------------------------------ banner
 
-def banner(width: int = 46) -> str:
-    """Boxed banner with the tool name and version, e.g.
+# Two-row half-block font: each glyph is (top, bottom), equal width per glyph.
+GLYPHS = {
+    "P": ("█▀█", "█▀▀"), "D": ("█▀▄", "█▄▀"), "F": ("█▀▀", "█▀ "), "O": ("█▀█", "█▄█"),
+    "R": ("█▀█", "█▀▄"), "E": ("█▀▀", "██▄"), "N": ("█▄ █", "█ ▀█"), "S": ("█▀", "▄█"),
+    "I": ("█", "█"), "C": ("█▀▀", "█▄▄"), " ": ("  ", "  "),
+}
+LOGO_TEXT = "PDF FORENSICS"
+# gradient stops (cyan -> blue -> violet -> magenta)
+GRADIENT = [(0, 229, 255), (41, 121, 255), (124, 77, 255), (224, 64, 251)]
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-    ##############################################
-    #                                            #
-    #          pdf-forensics-kit 0.4.0           #
-    # PDF & Office tampering analysis - local... #
-    #                                            #
-    ##############################################
+
+def _logo_rows() -> tuple[str, str]:
+    top = " ".join(GLYPHS[ch][0] for ch in LOGO_TEXT)
+    bot = " ".join(GLYPHS[ch][1] for ch in LOGO_TEXT)
+    return top, bot
+
+
+def _truecolor() -> bool:
+    return os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
+
+
+def _lerp(stops: list[tuple[int, int, int]], t: float) -> tuple[int, int, int]:
+    t = min(max(t, 0.0), 1.0) * (len(stops) - 1)
+    i = min(int(t), len(stops) - 2)
+    f = t - i
+    a, b = stops[i], stops[i + 1]
+    return tuple(round(a[k] + (b[k] - a[k]) * f) for k in range(3))  # type: ignore[return-value]
+
+
+def _rgb_code(rgb: tuple[int, int, int], truecolor: bool) -> str:
+    if truecolor:
+        return "38;2;%d;%d;%d" % rgb
+    r, g, b = (round(v / 255 * 5) for v in rgb)  # 6x6x6 cube of the 256-colour palette
+    return "38;5;%d" % (16 + 36 * r + 6 * g + b)
+
+
+def gradient(text: str, on: bool, truecolor: bool | None = None, bold: bool = True) -> str:
+    """Colour text with a horizontal gradient (per character); spaces stay uncoloured."""
+    if not on:
+        return text
+    tc = _truecolor() if truecolor is None else truecolor
+    n = max(len(text) - 1, 1)
+    out = []
+    for i, ch in enumerate(text):
+        if ch == " ":
+            out.append(ch)
+        else:
+            out.append(f"\033[{'1;' if bold else ''}{_rgb_code(_lerp(GRADIENT, i / n), tc)}m{ch}")
+    return "".join(out) + "\033[0m"
+
+
+def visible_len(text: str) -> int:
+    return len(ANSI_RE.sub("", text))
+
+
+def _unicode_ok(stream: Any = None) -> bool:
+    enc = getattr(stream or sys.stdout, "encoding", None) or "ascii"
+    try:
+        "╭█▀▄●✓❯".encode(enc)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+def banner(colour: bool = False, unicode: bool | None = None, status: list[tuple[str, bool]] | None = None) -> str:
+    """Start-up banner: gradient block logo in a rounded panel, tagline, version and badges.
+
+    ╭─────────────────────────────────────────────────────────╮
+    │                                                         │
+    │   █▀█ █▀▄ █▀▀   █▀▀ █▀█ █▀█ █▀▀ █▄ █ █▀ █ █▀▀ █▀        │
+    │   █▀▀ █▄▀ █▀    █▀  █▄█ █▀▄ ██▄ █ ▀█ ▄█ █ █▄▄ ▄█  kit   │
+    │                                                         │
+    │   pdf-forensics-kit · PDF & Office tampering    v0.5.0  │
+    │   ● local   ● read-only   ● no uploads                  │
+    │                                                         │
+    ╰─────────────────────────────────────────────────────────╯
+
+    Falls back to plain ASCII when the terminal cannot show Unicode, and to no colour
+    when colour is off (NO_COLOR, pipes, dumb terminals).
     """
-    lines = [f"pdf-forensics-kit {__version__}", TAGLINE]
-    inner = max(width - 2, max(len(s) for s in lines) + 4)
-    edge = "#" * (inner + 2)
-    blank = "#" + " " * inner + "#"
-    body = ["#" + s.center(inner) + "#" for s in lines]
-    return "\n".join([edge, blank, *body, blank, edge])
+    uni = _unicode_ok() if unicode is None else unicode
+    ver = f"v{__version__}"
+    if uni:
+        tl, tr, bl, br, h, v, dot = "╭", "╮", "╰", "╯", "─", "│", "●"
+        top, bot = _logo_rows()
+        logo = [top, bot + "  kit"]
+    else:
+        tl, tr, bl, br, h, v, dot = "+", "+", "+", "+", "-", "|", "*"
+        logo = ["P D F   F O R E N S I C S   kit"]
+    tagline = "pdf-forensics-kit · PDF & Office tampering analysis" if uni else \
+        "pdf-forensics-kit - PDF & Office tampering analysis"
+    badges = [f"{dot} local", f"{dot} read-only", f"{dot} no uploads"]
+    pad = 3
+    inner = max(max(len(x) for x in logo), len(tagline) + 2 + len(ver), len("   ".join(badges))) + 2 * pad
+
+    def dim(t: str) -> str:
+        return _c(t, "38;5;240", colour)
+
+    def row(content: str = "", plain_len: int | None = None) -> str:
+        n = visible_len(content) if plain_len is None else plain_len
+        return dim(v) + " " * pad + content + " " * (inner - pad - n) + dim(v)
+
+    lines = [dim(tl + h * inner + tr), row()]
+    width_logo = max(len(x) for x in logo)
+    left = (inner - width_logo) // 2
+    for x in logo:
+        x = x.ljust(width_logo)
+        lines.append(dim(v) + " " * left + gradient(x, colour) + " " * (inner - left - len(x)) + dim(v))
+    lines.append(row())
+    gap = inner - 2 * pad - len(tagline) - len(ver)
+    tag = _c("pdf-forensics-kit", "1", colour) + tagline[len("pdf-forensics-kit"):]
+    lines.append(row(tag + " " * gap + _c(ver, "1;38;5;141", colour), len(tagline) + gap + len(ver)))
+    badge_cols = ["38;5;42", "38;5;39", "38;5;213"]
+    btxt = "   ".join(_c(b[:1], c, colour) + _c(b[1:], "38;5;250", colour) for b, c in zip(badges, badge_cols))
+    lines.append(row(btxt, len("   ".join(badges))))
+    lines += [row(), dim(bl + h * inner + br)]
+    if status:
+        ok, bad = ("✓", "✗") if uni else ("+", "-")
+        parts = [(_c(ok, "1;32", colour) if good else _c(bad, "2", colour)) + " " + _c(label, "38;5;250" if good else "2", colour)
+                 for label, good in status]
+        lines.append("  " + "   ".join(parts))
+    return "\n".join(lines)
+
+
+def _libedit() -> bool:
+    try:
+        import readline
+    except ImportError:
+        return False
+    return "libedit" in (readline.__doc__ or "")
 
 
 def _colour_enabled(stream: Any) -> bool:
@@ -72,22 +189,64 @@ def _c(text: str, code: str, on: bool) -> str:
     return f"\033[{code}m{text}\033[0m" if on else text
 
 
-def pretty(md: str, on: bool) -> str:
-    """Light terminal styling for the Markdown the tool produces (no-op without colour)."""
+VERDICT_RE = re.compile(r"`?\b(strong-indicators|significant-indicators|review-recommended|minor-anomalies|"
+                        r"no-indicators)\b`?")
+SEV_BADGES = {"CRITICAL": "1;97;48;5;160", "HIGH": "1;97;48;5;196", "MEDIUM": "1;30;48;5;214",
+              "LOW": "1;30;48;5;80", "INFO": "30;48;5;245"}
+
+
+def wrap_ansi(line: str, width: int) -> list[str]:
+    """Word-wrap a (possibly coloured) line to the visible width, with a hanging indent
+    for bullets and numbered steps."""
+    if width < 20 or visible_len(line) <= width:
+        return [line]
+    plain = ANSI_RE.sub("", line)
+    m = re.match(r"^(\s*(?:[•\-]|\d+\.)?\s*)", plain)
+    hang = " " * len(m.group(1)) if m else ""
+    lead = line[:len(line) - len(line.lstrip(" "))]
+    words = line.lstrip(" ").split(" ")
+    words[0] = lead + words[0]
+    rows, cur, cur_len = [], "", 0
+    for w in words:
+        wl = visible_len(w)
+        if cur and cur_len + 1 + wl > width:
+            rows.append(cur)
+            cur, cur_len = hang + w, len(hang) + wl
+        else:
+            cur = f"{cur} {w}" if cur else w
+            cur_len += (1 if cur_len else 0) + wl
+    rows.append(cur)
+    return rows
+
+
+def pretty(md: str, on: bool, width: int | None = None) -> str:
+    """Terminal styling for the Markdown the tool produces (no-op without colour).
+
+    Headings get an accent bar, verdict labels are coloured chips, severities are badges,
+    list dashes become bullets and inline code is shown in cyan without backticks.
+    """
+    if width is None:
+        import shutil
+
+        width = shutil.get_terminal_size((100, 24)).columns - 1
     if not on:
-        return md
+        return "\n".join(r for line in md.splitlines() for r in wrap_ansi(line, width))
     out = []
     for line in md.splitlines():
         if line.startswith("#"):
-            line = _c(line.lstrip("# "), "1;4", True)
+            level = len(line) - len(line.lstrip("#"))
+            title = line.lstrip("# ")
+            line = (gradient("▌ " + title, True) if level == 1 else _c("▎ " + title, "1;38;5;141", True))
         else:
+            line = re.sub(r"^(\s*)- ", lambda m: m.group(1) + _c("• ", "38;5;141", True), line)
+            line = re.sub(r"^(\d+)\. ", lambda m: _c(f"{m.group(1)}.", "1;38;5;141", True) + " ", line)
             line = re.sub(r"\*\*(.+?)\*\*", lambda m: _c(m.group(1), "1", True), line)
             line = re.sub(r"\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]",
-                          lambda m: _c(f"[{m.group(1)}]", SEV_COLOURS[m.group(1)], True), line)
-            line = re.sub(r"`([a-z-]+-indicators|review-recommended|minor-anomalies)`",
-                          lambda m: _c(m.group(1), VERDICT_COLOURS.get(m.group(1), "1"), True), line)
+                          lambda m: _c(f" {m.group(1)} ", SEV_BADGES[m.group(1)], True), line)
+            line = VERDICT_RE.sub(lambda m: _c(f" {m.group(1)} ", VERDICT_CHIPS[m.group(1)], True), line)
+            line = re.sub(r"`([^`]+)`", lambda m: _c(m.group(1), "38;5;80", True), line)
             line = re.sub(r"(?<!\w)_(.+?)_(?!\w)", lambda m: _c(m.group(1), "2", True), line)
-        out.append(line)
+        out.extend(wrap_ansi(line, width))
     return "\n".join(out)
 
 
@@ -110,14 +269,22 @@ class ForensicsShell(cmd.Cmd):
 
     # -------------------------------------------------------------- helpers
     def _prompt_text(self) -> str:
-        if not self.colour:
-            return "pdfforensics › "
+        uni = _unicode_ok()
+        mark, arrow = ("◆", "❯") if uni else ("*", ">")
+        if not self.colour or _libedit():
+            # macOS libedit mishandles zero-width markers (it emits all colour codes before the prompt
+            # text), so the prompt stays plain there rather than misaligning the cursor.
+            return f"{mark} pdfforensics {arrow} "
 
         # \001 ... \002 mark escape codes as zero-width so readline computes the cursor position correctly
         def z(code: str) -> str:
             return f"\001\033[{code}m\002"
 
-        return f"{z('1;36')}pdfforensics{z('0')}{z('2')} › {z('0')}"
+        tc = _truecolor()
+        c1 = _rgb_code(GRADIENT[0], tc)
+        c2 = _rgb_code(GRADIENT[2], tc)
+        return (f"{z(c1)}{mark}{z('0')} {z('1;' + c1)}pdf{z('0')}{z('1;' + c2)}forensics{z('0')} "
+                f"{z('38;5;213')}{arrow}{z('0')} ")
 
     def out(self, text: str = "") -> None:
         print(text, file=sys.stdout)
@@ -130,6 +297,15 @@ class ForensicsShell(cmd.Cmd):
 
     def _options(self) -> Options:
         return Options(external_tools=self.external, online_revocation=self.online)
+
+    def status_badges(self) -> list[tuple[str, bool]]:
+        from pdfforensics.analyzers.pdfsig import find_pdfsig
+        from pdfforensics.analyzers.signatures import HAVE_PYHANKO
+
+        return [("pyHanko signatures", HAVE_PYHANKO),
+                ("pdfsig", bool(find_pdfsig()) and self.external),
+                ("offline" if not self.online else "ONLINE revocation", not self.online),
+                (f"saving to {self.outdir}" if self.outdir else "screen only", True)]
 
     def _split(self, line: str) -> list[str] | None:
         try:
@@ -299,13 +475,20 @@ class ForensicsShell(cmd.Cmd):
             self.err("nothing analysed yet in this session")
             return
         for r in self.last:
-            self.out(_c(f"{r['file']['name']}  ", "1", self.colour)
-                     + _c(r["verdict"]["label"], VERDICT_COLOURS.get(r["verdict"]["label"], "1"), self.colour))
+            label = r["verdict"]["label"]
+            chip = _c(f" {label} ", VERDICT_CHIPS[label], self.colour) if self.colour else label
+            self.out(_c(f"{r['file']['name']}  ", "1", self.colour) + chip)
             shown = [f for f in r["findings"] if order.index(f["severity"]) >= order.index(level)]
             for f in shown:
                 tag = f["severity"].upper()
-                self.out(f"  {_c(f'[{tag}]', SEV_COLOURS[tag], self.colour)} {f['title']}  "
-                         + _c(f"({f['id']}, confidence {f['confidence']})", "2", self.colour))
+                badge = _c(f" {tag} ", SEV_BADGES[tag], self.colour) if self.colour else f"[{tag}]"
+                import shutil
+
+                line = (f"  {badge} {f['title']}  "
+                        + _c(f"({f['id']}, confidence {f['confidence']})", "2", self.colour))
+                width = shutil.get_terminal_size((100, 24)).columns - 1
+                for i, part in enumerate(wrap_ansi(line, width)):
+                    self.out(part if i == 0 else "      " + part.lstrip())
             if not shown:
                 self.out(_c("  (none at this level)", "2", self.colour))
 
@@ -392,7 +575,7 @@ class ForensicsShell(cmd.Cmd):
         """clear
     Clear the screen and show the banner again."""
         self.out("\033[2J\033[H" if self.colour else "")
-        self.out(_c(banner(), "1;36", self.colour))
+        self.out(banner(self.colour, status=self.status_badges()))
 
     def do_help(self, arg: str) -> None:
         """help [COMMAND]
@@ -404,7 +587,7 @@ class ForensicsShell(cmd.Cmd):
             else:
                 self.err(f"no help for {arg!r}")
             return
-        self.out(_c("Commands", "1", self.colour))
+        self.out(gradient("Commands", self.colour))
         for name, text in [
             ("<path>", "drag a file or folder in and press Enter to analyse it"),
             ("analyze PATH...", "analyse files/folders and show the summary (alias: a)"),
@@ -419,7 +602,7 @@ class ForensicsShell(cmd.Cmd):
             ("clear", "clear the screen"),
             ("exit", "leave (also: quit, q, Ctrl-D)"),
         ]:
-            self.out(f"  {_c(name, '36', self.colour):<{30 if self.colour else 21}} {text}")
+            self.out(f"  {_c(name.ljust(20), '1;38;5;80', self.colour)} {_c(text, '38;5;250', self.colour)}")
 
     def do_exit(self, line: str) -> bool:
         """exit
@@ -465,9 +648,10 @@ def run() -> int:
     shell = ForensicsShell()
     interactive = sys.stdin.isatty()
     if interactive:
-        shell.out(_c(banner(), "1;36", shell.colour))
-        shell.out(_c("  Drag a file or folder here and press Enter, or type 'help'. 'exit' to leave.\n",
-                     "2", shell.colour))
+        shell.out(banner(shell.colour, status=shell.status_badges()))
+        shell.out(_c("  Drag a file or folder here and press Enter", "38;5;250", shell.colour)
+                  + _c("  ·  ", "2", shell.colour) + _c("help", "1;38;5;141", shell.colour)
+                  + _c("  ·  ", "2", shell.colour) + _c("exit", "1;38;5;141", shell.colour) + "\n")
     else:
         shell.prompt = ""
     while True:

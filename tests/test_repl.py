@@ -17,12 +17,34 @@ def _tampered() -> bytes:
     return pdfgen.append_update(base, {num: pdfgen.stream_obj(pdfgen.text_stream("Invoice 2026-001", "Total: 900 SEK"))})
 
 
-def test_banner_is_a_closed_box_with_name_and_version():
-    lines = banner().splitlines()
+@pytest.mark.parametrize("uni", [True, False])
+def test_banner_is_a_closed_panel_with_name_and_version(uni):
+    lines = banner(colour=False, unicode=uni).splitlines()
     assert len({len(line) for line in lines}) == 1          # all rows equally wide
-    assert set(lines[0]) == {"#"} and set(lines[-1]) == {"#"}
-    assert all(line.startswith("#") and line.endswith("#") for line in lines)
-    assert any(f"pdf-forensics-kit {__version__}" in line for line in lines)
+    corners = ("╭", "╮", "╰", "╯") if uni else ("+", "+", "+", "+")
+    assert lines[0][0] == corners[0] and lines[0][-1] == corners[1]
+    assert lines[-1][0] == corners[2] and lines[-1][-1] == corners[3]
+    text = "\n".join(lines)
+    assert "pdf-forensics-kit" in text and f"v{__version__}" in text
+    if not uni:
+        text.encode("ascii")                                 # pure ASCII fallback
+
+
+def test_coloured_banner_keeps_alignment():
+    from pdfforensics.repl import visible_len
+    status = [("pyHanko signatures", True), ("pdfsig", False)]
+    coloured = banner(colour=True, unicode=True, status=status).splitlines()
+    plain = banner(colour=False, unicode=True, status=status).splitlines()
+    assert [visible_len(x) for x in coloured] == [len(x) for x in plain]
+    assert "\x1b[" in coloured[2]                            # the logo is coloured
+    assert "✓ pyHanko signatures" in plain[-1] and "✗ pdfsig" in plain[-1]
+
+
+def test_gradient_fallback_to_256_colours():
+    from pdfforensics.repl import gradient
+    assert "38;5;" in gradient("abc", True, truecolor=False)
+    assert "38;2;" in gradient("abc", True, truecolor=True)
+    assert gradient("abc", False) == "abc"
 
 
 def test_bare_path_is_analysed(tmp_path, capsys):
@@ -145,3 +167,19 @@ def test_path_completion(tmp_path, monkeypatch):
     assert sh.complete_analyze("inv", "analyze inv", 8, 11) == ["invoice-2026.pdf", "invoices/"]
     assert sh.complete_set("ou", "set ou", 4, 6) == ["outdir"]
     assert sh.complete_set("o", "set external o", 13, 14) == ["on", "off"]
+
+
+def test_wrap_ansi_keeps_colour_and_hanging_indent():
+    from pdfforensics.repl import pretty, visible_len
+    md = "- [HIGH] " + "word " * 40 + "end"
+    rows = pretty(md, True, width=60).splitlines()
+    assert len(rows) > 1 and all(visible_len(r) <= 60 for r in rows)
+    assert rows[1].startswith("  ")                       # hanging indent under the bullet
+    plain = pretty(md, False, width=60).splitlines()
+    assert all(len(r) <= 60 for r in plain)
+
+
+def test_wrap_ansi_preserves_leading_indent():
+    from pdfforensics.repl import wrap_ansi
+    rows = wrap_ansi("  " + "x " * 50, 30)
+    assert rows[0].startswith("  x")

@@ -42,6 +42,8 @@ Everything runs offline on your machine. The document is never uploaded, modifie
 
 ## See it in action
 
+<p align="center"><img src="docs/images/shell.png" alt="pdfforensics interactive shell" width="720"></p>
+
 A case folder contains three documents: a signed invoice, a Word offer and a bank statement.
 
 ```bash
@@ -288,30 +290,19 @@ The analysis is also available from Python: `from pdfforensics import analyze_fi
 
 Run `pdfforensics` without arguments (or `pdfforensics shell`) to open a session that stays live for input:
 
-```text
-$ pdfforensics
-########################################################
-#                                                      #
-#               pdf-forensics-kit 0.4.1                #
-#  PDF & Office tampering analysis - local, read-only  #
-#                                                      #
-########################################################
-  Drag a file or folder here and press Enter, or type 'help'. 'exit' to leave.
+![The pdfforensics interactive shell analysing a forged bank statement](docs/images/shell.png)
 
-pdfforensics › ~/Downloads/invoice.pdf
-# Summary: invoice.pdf
-**invoice.pdf: significant-indicators - 1 finding(s) need attention (1 high).**
-- [HIGH] Revision 2 changes page content: removed: "Total: 100 SEK"; added: "Total: 900 SEK"
-...
-pdfforensics › findings medium
-invoice.pdf  significant-indicators
-  [HIGH] Revision 2 changes page content  (revisions.content-changed, confidence high)
-pdfforensics › extract ~/Downloads/invoice.pdf
-pdfforensics › exit
-```
+*(Screenshot: the shell analysing the fictitious [`05_signed_then_edited.pdf`](examples/bank-statement/). The
+middle of the summary is cropped.)*
+
+The banner shows a gradient logo, the version, and which validators are active (pyHanko, pdfsig, offline or
+online, where reports are saved). Verdicts and severities appear as coloured chips and long lines wrap to
+the terminal width. The display adapts to the terminal: true colour when `COLORTERM=truecolor`, otherwise
+the 256-colour palette. It falls back to plain ASCII if the terminal can't show Unicode, and to no colour
+with `NO_COLOR=1` or when output is piped.
 
 **Drag and drop a file or folder into the terminal and press Enter.** It is analysed right away, and paths
-with spaces work. Results are colour-coded by severity (set `NO_COLOR=1` to turn colour off). Tab completes
+with spaces work. Tab completes
 commands and file paths, the arrow keys recall earlier commands (history is kept in
 `~/.pdfforensics_history`), and Ctrl-C interrupts a running analysis without leaving the shell.
 
