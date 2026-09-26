@@ -13,7 +13,7 @@ from typing import Callable
 import pikepdf
 import pypdf
 
-from pdfforensics import capture, document, office, scoring, summary
+from pdfforensics import capture, document, office, scoring, summary, timeline
 from pdfforensics.model import AnalyzerResult, Confidence, Finding, Report, Severity
 
 # extension -> container family the extension promises
@@ -136,6 +136,9 @@ def analyze_file(path: str | os.PathLike[str], options: document.Options | None 
     else:
         raise capture.InputError("unsupported format: expected PDF or Office (DOCX/XLSX/PPTX) - "
                                  "no %PDF- header or ZIP/OLE signature found")
+
+    if fmt in ("pdf", "ooxml"):
+        collect("timeline", lambda: timeline.build(facts, fmt))
 
     if not capture.path_still_matches(snap):
         findings.append(Finding(

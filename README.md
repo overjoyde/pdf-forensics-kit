@@ -426,6 +426,7 @@ Known limits:
 | input (all formats) | `extension-mismatch`, `changed-after-capture` |
 | PDF structure | `data-before-header`, `data-after-eof`, `extra-eof-markers`, `repaired`, `unreachable-objects`, `encrypted`, `xref-chain-broken`, `unlinked-revision` |
 | PDF revisions | `content-changed` (with text diff), `annotation-or-form-update`, `metadata-update`, `signature-update`, `other-update`, `not-all-compared` |
+| Timeline | `timeline.inconsistent-times` |
 | PDF signatures (pyHanko) | `intact`, `broken`, `disallowed-modification`, `bytes-after-last-signature`, `malformed-byterange`, `usage-rights`, `not-validated`, `validation-error`, `unparseable` |
 | PDF signatures (pdfsig, optional) | `integrity-ok`, `integrity-failure`, `integrity-unknown`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
 | PDF metadata | `modified-before-created`, `future-date`, `info-xmp-date-mismatch`, `producer-mismatch`, `editor-tool`, `manipulation-library`, `xmp-history`, `absent` |

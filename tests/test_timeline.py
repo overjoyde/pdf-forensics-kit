@@ -60,3 +60,75 @@ def test_word_tracked_changes_are_kept_individually(analyze):
         ("del", "Anna Andersson", "2026-03-02T09:15:00Z", "100 SEK"),
         ("ins", "Anna Andersson", "2026-03-02T09:15:00Z", "900 SEK"),
     ]
+
+
+def _events(r, kind=None):
+    return [e for e in r["facts"]["timeline"]["events"] if kind is None or e["kind"] == kind]
+
+
+def test_content_change_has_time_before_and_after(analyze):
+    r = analyze(_edited_with_moddate("D:20260310121500+01'00'"))
+    [e] = _events(r, "content-change")
+    assert e["revision"] == 2
+    assert e["when"] == "2026-03-10T12:15:00+01:00"
+    assert e["time_evidence"] == "claimed" and "ModDate" in e["time_source"]
+    assert e["paired"] and e["before"] == ["Total: 100 SEK"] and e["after"] == ["Total: 900 SEK"]
+    assert e["who"] == "Acme PDF Editor 3"
+
+
+def test_events_are_in_time_order(analyze):
+    times = [e["when"] for e in _events(analyze(_edited_with_moddate("D:20260310121500+01'00'"))) if e["when"]]
+    assert times == sorted(times)
+
+
+def test_later_revision_claiming_an_earlier_time_is_flagged(analyze):
+    r = analyze(_edited_with_moddate("D:20200101000000Z"))
+    assert finding(r, "timeline.inconsistent-times")["severity"] == "medium"
+
+
+def test_naive_and_aware_times_do_not_crash(analyze):
+    r = analyze(_edited_with_moddate("D:20260310121500"))
+    assert "timeline" in r["facts"]
+    assert not [e for e in r["errors"] if e["analyzer"] == "timeline"]
+
+
+def test_unreadable_revision_is_listed(analyze):
+    base = pdfgen.build()
+    broken = pdfgen.append_update(base, {pdfgen.content_objnum(base): b"<< /Length 5 >>\nstream\nxx"})
+    events = _events(analyze(broken))
+    assert any(e["kind"] in ("unreadable-revision", "revision", "content-change") and e["revision"] == 2
+               for e in events)
+
+
+@needs_pyhanko
+def test_signed_then_edited_marks_change_after_signing(analyze):
+    signed = pdfgen.sign(pdfgen.build())
+    edited = pdfgen.append_update(signed, {pdfgen.content_objnum(signed): pdfgen.stream_obj(
+        pdfgen.text_stream("Invoice 2026-001", "Total: 9 SEK"))})
+    r = analyze(edited)
+    [sig] = _events(r, "signature")
+    assert sig["time_evidence"] == "signed"
+    assert all(e["after_signing"] for e in _events(r, "content-change"))
+
+
+@needs_pyhanko
+def test_document_timestamp_is_timestamped(analyze):
+    [ts] = _events(analyze(pdfgen.document_timestamp(pdfgen.build())), "timestamp")
+    assert ts["time_evidence"] == "timestamped" and ts["when"]
+
+
+def test_word_delete_then_insert_is_one_change(analyze):
+    r = analyze(officegen.build("docx", main=officegen.word_body(TRACKED)), name="doc.docx")
+    [e] = _events(r, "tracked-change")
+    assert (e["before"], e["after"], e["who"]) == (["100 SEK"], ["900 SEK"], "Anna Andersson")
+    assert e["when"] == "2026-03-02T09:15:00+00:00" and e["time_evidence"] == "claimed"
+
+
+def test_revision_that_could_not_be_opened_stays_in_the_timeline():
+    from pdfforensics import timeline
+    facts = {"revisions": {"revision_times": [{"revision": 1, "end": 900, "info_mod": None, "info_created": None,
+                                               "xmp_modify": None, "producer": ""}],
+                           "updates": [{"revision": 2, "end": 1200, "error": "cannot open: damaged"}]}}
+    events = timeline.build(facts, "pdf").facts["events"]
+    assert [(e["kind"], e["revision"]) for e in events if e["kind"] == "unreadable-revision"] == [
+        ("unreadable-revision", 2)]
