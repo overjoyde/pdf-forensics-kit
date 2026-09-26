@@ -32,6 +32,15 @@ pdfforensics extract-revisions examples/bank-statement/03_edited_in_acrobat.pdf 
 pdfforensics compare examples/bank-statement/01_original.pdf examples/bank-statement/04_edited_online_editor.pdf
 ```
 
+## Saved example reports
+
+The `*.forensics-report.md` files in this folder are real output from the interactive shell: the folder was
+analysed and the "Save the report as Markdown…?" question was answered **yes**. Each document got its report
+next to it, and the batch report `forensics-batch-report-*.md` went in the folder itself. Open, for example,
+[`05_signed_then_edited.pdf.forensics-report.md`](05_signed_then_edited.pdf.forensics-report.md) to see a
+complete report without running the tool. The only edit is that absolute paths were shortened to
+repo-relative ones.
+
 ## What the tool finds
 
 **03 (desktop editor):** the original is still inside the file.
