@@ -213,31 +213,84 @@ ORPHAN_FONT = b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>"
 
 # ------------------------------------------------------------------ signing (pyHanko)
 
-def sign(data: bytes) -> bytes:
+def corrupt_first_signature(data: bytes) -> bytes:
+    """Overwrite the first signature's CMS container with zeros (same length, so offsets hold)."""
+    m = re.search(rb"/Contents\s*<([0-9a-fA-F]+)>", data)
+    return data[:m.start(1)] + b"30" + b"0" * (len(m.group(1)) - 2) + data[m.end(1):]
+
+
+def corrupt_last_signature(data: bytes) -> bytes:
+    """Like corrupt_first_signature, for the newest signature (no later signature covers it)."""
+    m = list(re.finditer(rb"/Contents\s*<([0-9a-fA-F]+)>", data))[-1]
+    return data[:m.start(1)] + b"30" + b"0" * (len(m.group(1)) - 2) + data[m.end(1):]
+
+
+def _test_certificate(common_name: str, timestamping: bool = False):
     from asn1crypto import keys as a_keys
     from asn1crypto import x509 as a_x509
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    now = datetime.now(timezone.utc)
+    builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+               .public_key(key.public_key()).serial_number(x509.random_serial_number())
+               .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30)))
+    if timestamping:
+        builder = builder.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), critical=True)
+    else:
+        builder = (builder.add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                   .add_extension(x509.KeyUsage(True, True, False, False, False, True, True, False, False),
+                                  critical=True))
+    cert = builder.sign(key, hashes.SHA256())
+    return (a_x509.Certificate.load(cert.public_bytes(serialization.Encoding.DER)),
+            a_keys.PrivateKeyInfo.load(key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+                                                         serialization.NoEncryption())))
+
+
+def sign(data: bytes, field_name: str = "Sig1", encrypted: bool = False) -> bytes:
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
     from pyhanko.sign import signers
     from pyhanko_certvalidator.registry import SimpleCertificateStore
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Signer")])
-    now = datetime.now(timezone.utc)
-    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
-            .public_key(key.public_key()).serial_number(x509.random_serial_number())
-            .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30))
-            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-            .add_extension(x509.KeyUsage(True, True, False, False, False, True, True, False, False), critical=True)
-            .sign(key, hashes.SHA256()))
-    signer = signers.SimpleSigner(
-        signing_cert=a_x509.Certificate.load(cert.public_bytes(serialization.Encoding.DER)),
-        signing_key=a_keys.PrivateKeyInfo.load(key.private_bytes(
-            serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())),
-        cert_registry=SimpleCertificateStore())
+    cert, key = _test_certificate("Test Signer")
+    signer = signers.SimpleSigner(signing_cert=cert, signing_key=key, cert_registry=SimpleCertificateStore())
     w = IncrementalPdfFileWriter(io.BytesIO(data))
-    out = signers.sign_pdf(w, signers.PdfSignatureMetadata(field_name="Sig1"), signer=signer)
+    if encrypted:
+        w.encrypt("")  # empty user password: anyone can open it
+    out = signers.sign_pdf(w, signers.PdfSignatureMetadata(field_name=field_name), signer=signer)
+    return out.getvalue()
+
+
+def document_timestamp(data: bytes) -> bytes:
+    """Append an RFC 3161 document timestamp (/DocTimeStamp), as PAdES-LTA archiving does."""
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+    from pyhanko.sign import signers
+    from pyhanko.sign.timestamps.dummy_client import DummyTimeStamper
+
+    cert, key = _test_certificate("Test TSA", timestamping=True)
+    w = IncrementalPdfFileWriter(io.BytesIO(data))
+    return signers.PdfTimeStamper(DummyTimeStamper(tsa_cert=cert, tsa_key=key)).timestamp_pdf(
+        w, md_algorithm="sha256").getvalue()
+
+
+def add_empty_signature_field(data: bytes, name: str) -> bytes:
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+    from pyhanko.sign import fields
+
+    w = IncrementalPdfFileWriter(io.BytesIO(data))
+    fields.append_signature_field(w, fields.SigFieldSpec(sig_field_name=name, box=(10, 10, 100, 40)))
+    out = io.BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
+def owner_password_only(data: bytes) -> bytes:
+    """Encrypt with an owner password and an empty user password (opens without a password)."""
+    out = io.BytesIO()
+    with pikepdf.open(io.BytesIO(data)) as pdf:
+        pdf.save(out, encryption=pikepdf.Encryption(owner="owner", user="", R=6))
     return out.getvalue()

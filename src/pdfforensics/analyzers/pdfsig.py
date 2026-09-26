@@ -104,6 +104,8 @@ def parse_output(text: str) -> dict[str, Any]:
                 elif key_l == "certificate validation":
                     s["trust"] = _match(val, TRUST)
                     s["trust_text"] = val
+            elif "form field is not signed" in line.lower():
+                s["signed"] = False
             elif line.lower() == "total document signed":
                 s["covers_whole_document"] = True
             elif line.lower() == "not total document signed":
@@ -163,6 +165,8 @@ def analyze(doc: Document) -> AnalyzerResult:
 
     ph = {v.get("field"): v for v in doc._cache.get("pyhanko_results", []) if v.get("field")}
     for s in r["signatures"]:
+        if s.get("signed") is False:
+            continue  # an empty signature field: nothing to validate
         label = s.get("field") or f"#{s['index']}"
         ev = {k: s.get(k) for k in ("field", "signer", "signing_time", "subfilter", "signed_ranges",
                                      "integrity_text", "trust_text", "covers_whole_document")}
@@ -172,6 +176,16 @@ def analyze(doc: Document) -> AnalyzerResult:
                 severity=Severity.CRITICAL, confidence=Confidence.HIGH, category="signatures",
                 explanation="Poppler reports a digest mismatch or invalid signature. The signed bytes were altered.",
                 evidence=ev))
+        elif s["integrity"] == "unknown" and "intact" not in ph.get(s.get("field"), {}):
+            # Only a doubt if pyHanko did not settle it either; Poppler does not verify document
+            # timestamps, for example.
+            res.findings.append(Finding(
+                id="pdfsig.integrity-unknown", title=f"pdfsig: integrity of signature '{label}' could not be determined",
+                severity=Severity.MEDIUM, confidence=Confidence.LOW, category="signatures",
+                explanation=("Poppler did not verify this signature, so this validator says nothing about whether the "
+                             "signed bytes are intact. A damaged or unsupported signature container causes this."),
+                evidence=ev,
+                benign_explanations=["Signature format Poppler does not support"]))
         if s["trust"] == "revoked":
             res.findings.append(Finding(
                 id="pdfsig.certificate-revoked", title=f"pdfsig: signing certificate for '{label}' is revoked",

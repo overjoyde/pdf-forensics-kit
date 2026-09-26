@@ -19,7 +19,11 @@ from pdfforensics.pdfutil import get, iso, name, parse_pdf_date, s
 
 try:  # optional dependency
     from pyhanko.pdf_utils.reader import PdfFileReader
-    from pyhanko.sign.validation import validate_pdf_signature
+    from pyhanko.sign.fields import SigSeedSubFilter, enumerate_sig_fields
+    from asn1crypto import cms
+    from pyhanko.sign.validation import EmbeddedPdfSignature, validate_pdf_signature, validate_pdf_timestamp
+    from pyhanko.sign.validation.generic_cms import extract_self_reported_ts
+    from pyhanko.sign.validation.pdf_embedded import extract_contents, extract_signer_info
     from pyhanko_certvalidator import ValidationContext
 
     HAVE_PYHANKO = True
@@ -77,16 +81,54 @@ def _coverage(sig: pikepdf.Dictionary, data: bytes) -> dict[str, Any]:
     return info
 
 
-def _pyhanko_validate(data: bytes) -> list[dict[str, Any]]:
-    results = []
+def _embedded_signatures(reader: Any) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Load each signature on its own, so one unparseable signature cannot hide the others.
+
+    pyHanko's reader.embedded_signatures raises on the first bad one. Signatures with a SubFilter
+    pyHanko does not support are skipped, as pyHanko does; they are reported as not validated.
+    """
+    supported = {x.value for x in SigSeedSubFilter}
+    loaded, broken = [], []
+    for fq_name, sig_obj, sig_field in enumerate_sig_fields(reader, filled_status=True):
+        try:
+            sig = sig_obj.get_object()
+            if str(sig.get("/SubFilter", "")) not in supported:
+                continue
+        except Exception as exc:
+            broken.append({"field": str(fq_name), "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        try:  # the CMS container itself: failing here means it cannot be a valid signature
+            extract_signer_info(cms.ContentInfo.load(extract_contents(sig))["content"])
+        except Exception as exc:
+            broken.append({"field": str(fq_name), "unparseable": True, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        try:
+            loaded.append(EmbeddedPdfSignature(reader, sig_field, fq_name))
+        except Exception as exc:
+            broken.append({"field": str(fq_name), "error": f"{type(exc).__name__}: {exc}"})
+    loaded.sort(key=lambda e: e.signed_revision)
+    return loaded, broken
+
+
+def _pyhanko_validate(data: bytes, password: str = "") -> list[dict[str, Any]]:
     reader = PdfFileReader(io.BytesIO(data), strict=False)
-    for emb in reader.embedded_signatures:
-        r: dict[str, Any] = {"field": getattr(emb, "field_name", None)}
+    if reader.encrypted:
+        reader.decrypt(password or "")  # an empty user password opens owner-password-only files
+    embedded, results = _embedded_signatures(reader)
+    for emb in embedded:
+        # plain str: for encrypted files pyHanko hands out decrypted proxy objects
+        field_name = getattr(emb, "field_name", None)
+        r: dict[str, Any] = {"field": str(field_name) if field_name is not None else None}
         try:
             # No trust anchors on purpose: this checks integrity, not signer trust. Without an explicit
             # list pyHanko falls back to the OS TLS roots, which is deprecated and not a document-signing
             # trust source anyway. Trust is reported by pdfsig against its own store.
-            st = validate_pdf_signature(emb, signer_validation_context=ValidationContext(trust_roots=[]))
+            context = ValidationContext(trust_roots=[])
+            if emb.sig_object_type == "/DocTimeStamp":
+                r["kind"] = "document-timestamp"
+                st = validate_pdf_timestamp(emb, validation_context=context)
+            else:
+                st = validate_pdf_signature(emb, signer_validation_context=context)
             try:
                 signer = st.signing_cert.subject.human_friendly
             except Exception:
@@ -101,6 +143,23 @@ def _pyhanko_validate(data: bytes) -> list[dict[str, Any]]:
                 "signer": signer,
                 "summary": st.summary() if hasattr(st, "summary") else "",
             })
+            try:
+                br = [int(x) for x in emb.byte_range]
+                r["signed_end"] = br[2] + br[3]
+            except Exception:
+                pass
+            # pyHanko's signer_reported_dt falls back to /M; only the signed signingTime attribute counts here
+            try:
+                reported = extract_self_reported_ts(emb.signer_info)
+            except Exception:
+                reported = None
+            if reported is not None:
+                r["signer_reported_time"] = reported.isoformat()
+            tsv = getattr(st, "timestamp_validity", None)
+            if tsv is not None and getattr(tsv, "timestamp", None) is not None:
+                r["signature_timestamp_time"] = tsv.timestamp.isoformat()
+            if r.get("kind") == "document-timestamp" and getattr(st, "timestamp", None) is not None:
+                r["timestamp_time"] = st.timestamp.isoformat()
         except Exception as exc:
             r["error"] = f"{type(exc).__name__}: {exc}"
         results.append(r)
@@ -166,10 +225,11 @@ def analyze(doc: Document) -> AnalyzerResult:
 
     if HAVE_PYHANKO:
         try:
-            ph = _pyhanko_validate(doc.data)
+            ph = _pyhanko_validate(doc.data, doc.options.password)
         except Exception as exc:
             ph = []
             res.facts["pyhanko_error"] = f"{type(exc).__name__}: {exc}"
+            res.error = f"pyHanko could not read the signatures: {type(exc).__name__}: {exc}"
         res.facts["validation"] = ph
         doc._cache["pyhanko_results"] = ph  # lets the pdfsig analyser cross-check
         usage_rights = [c for c in cov if c["purpose"] == "usage-rights"]
@@ -182,21 +242,30 @@ def analyze(doc: Document) -> AnalyzerResult:
                 evidence={"signatures": [{k: c.get(k) for k in ("object", "subfilter", "byte_range")}
                                          for c in usage_rights]}))
         doc_sigs = [c for c in cov if c["purpose"] != "usage-rights"]
-        if len(ph) < len(doc_sigs):
+        if len(ph) < len(doc_sigs) and "pyhanko_error" not in res.facts:
             res.findings.append(Finding(
                 id="signature.not-validated",
                 title=f"{len(doc_sigs) - len(ph)} signature(s) could not be validated cryptographically",
                 severity=Severity.LOW, confidence=Confidence.HIGH, category="signatures",
-                explanation=("pyHanko skipped these signatures, typically because they use a legacy or unsupported "
-                             "format (for example adbe.x509.rsa_sha1) or sit outside the form field tree. Their "
-                             "integrity is unknown. Only the ByteRange coverage checks above apply."),
+                explanation=("pyHanko skipped these signatures because they use a legacy or unsupported format "
+                             "(for example adbe.x509.rsa_sha1) or sit outside the form field tree. Their integrity "
+                             "is unknown. Only the ByteRange coverage checks above apply."),
                 evidence={"subfilters": sorted({c.get("subfilter") or "?" for c in doc_sigs}),
                           "found": len(doc_sigs), "validated": len(ph)}))
         for r in ph:
-            if "error" in r:
+            if r.get("unparseable"):
+                res.findings.append(Finding(
+                    id="signature.unparseable",
+                    title=f"Signature '{r.get('field')}' is not a readable signature container",
+                    severity=Severity.HIGH, confidence=Confidence.HIGH, category="signatures",
+                    explanation=("The signature's /Contents does not hold a well-formed CMS signature, so it cannot be "
+                                 "valid. Either the signature was damaged or its bytes were replaced after signing."),
+                    evidence=r,
+                    benign_explanations=["File corrupted during transfer (check other structural findings)"]))
+            elif "error" in r:
                 res.findings.append(Finding(
                     id="signature.validation-error", title=f"Signature '{r.get('field')}' could not be validated",
-                    severity=Severity.MEDIUM, confidence=Confidence.LOW, category="signatures",
+                    severity=Severity.MEDIUM, confidence=Confidence.MEDIUM, category="signatures",
                     explanation="The cryptographic check failed with an error, so integrity is unknown.",
                     evidence=r))
             elif not r["intact"]:

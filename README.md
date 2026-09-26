@@ -214,7 +214,7 @@ the summary exactly.
 
 ### Exit codes
 
-`0` success · `1` a verdict reached the `--fail-on` level · `2` input error (not found, unsupported, unreadable)
+`0` success · `1` a verdict reached the `--fail-on` level, or (with `--fail-on-incomplete`) an analysis was incomplete or a file could not be analysed · `2` input error (not found, unsupported, unreadable)
 
 ---
 
@@ -226,7 +226,7 @@ Requires Python 3.10 or later.
 git clone https://github.com/overjoyde/pdf-forensics-kit.git
 cd pdf-forensics-kit
 python3 -m venv .venv
-.venv/bin/pip install -e '.[signatures]'      # add ,dev for the test suite
+.venv/bin/pip install -e '.[signatures]'      # add ,report for PDF reports, ,dev for the test suite
 .venv/bin/pdfforensics --version
 ```
 
@@ -235,6 +235,7 @@ python3 -m venv .venv
 | `pikepdf` (qpdf) | yes | Low-level PDF structure | MPL-2.0 |
 | `pypdf` | yes | Text of each PDF revision | BSD |
 | `pyhanko` | optional (`[signatures]`) | Cryptographic PDF signature validation | MIT |
+| `reportlab` | optional (`[report]`) | PDF report output | BSD |
 | Poppler `pdfsig` | optional (`brew install poppler` / `apt install poppler-utils`) | Second signature validator: trust and revocation | GPL (separate program, called as a tool) |
 
 Office analysis uses only the Python standard library. There is no AGPL code and nothing phones home.
@@ -279,10 +280,12 @@ pdfforensics analyze ./inbox --json - --fail-on high
 | `--out-dir DIR` | Write JSON, report and summary per file (plus `batch-summary.md`) |
 | `--json FILE` / `--markdown FILE` | Write the JSON or Markdown report (`-` for stdout) |
 | `--summary [FILE]` | Output only the plain-language summary |
+| `--pdf-report PATH` | Write a summarised PDF report with the verdict, key findings and the edit timeline (a directory when several files are analysed). Needs `pip install 'pdf-forensics-kit[report]'` |
 | `--hide-info` | Leave info-level findings out of the Markdown |
 | `--save-report` | Save `<document>.forensics-report.md` next to each document without asking |
 | `--no-prompt` | Never ask whether to save a report (for scripts). In a terminal, `analyze` otherwise asks after the analysis |
 | `--fail-on LEVEL` | Exit with 1 if any verdict is at or above `low`/`medium`/`high`/`critical` |
+| `--fail-on-incomplete` | Exit with 1 if any analysis is incomplete (a check failed) or a file could not be analysed. Legacy .doc/.xls/.ppt files are always incomplete |
 | `--password PW` | User password for encrypted PDFs |
 | `--no-external-tools` | Do not run Poppler `pdfsig`, even if installed |
 | `--online-revocation` | Let `pdfsig` contact OCSP servers to check revocation (**network access**, off by default) |
@@ -425,8 +428,9 @@ Known limits:
 | input (all formats) | `extension-mismatch`, `changed-after-capture` |
 | PDF structure | `data-before-header`, `data-after-eof`, `extra-eof-markers`, `repaired`, `unreachable-objects`, `encrypted`, `xref-chain-broken`, `unlinked-revision` |
 | PDF revisions | `content-changed` (with text diff), `annotation-or-form-update`, `metadata-update`, `signature-update`, `other-update`, `not-all-compared` |
-| PDF signatures (pyHanko) | `intact`, `broken`, `disallowed-modification`, `bytes-after-last-signature`, `malformed-byterange`, `usage-rights`, `not-validated`, `validation-error` |
-| PDF signatures (pdfsig, optional) | `integrity-ok`, `integrity-failure`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
+| Timeline | `timeline.inconsistent-times` |
+| PDF signatures (pyHanko) | `intact`, `broken`, `disallowed-modification`, `bytes-after-last-signature`, `malformed-byterange`, `usage-rights`, `not-validated`, `validation-error`, `unparseable` |
+| PDF signatures (pdfsig, optional) | `integrity-ok`, `integrity-failure`, `integrity-unknown`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
 | PDF metadata | `modified-before-created`, `future-date`, `info-xmp-date-mismatch`, `producer-mismatch`, `editor-tool`, `manipulation-library`, `xmp-history`, `absent` |
 | PDF content | `invisible-text`, `ocr-text-layer`, `print-only-annotations`, `hidden-annotations`, `layer-view-print-differs`, `layers-hidden-by-default` |
 | PDF active content | `javascript`, `launch-action`, `submit-or-import`, `remote-goto`, `multimedia`, `xfa`, `embedded-files`, `e-invoice-attachment`, `additional-actions`, `uris` |

@@ -301,6 +301,7 @@ def _word(pkg: _Pkg) -> tuple[dict[str, Any], list[Finding]]:
     authors: set[str] = set()
     deleted: list[str] = []
     inserted: list[str] = []
+    changes: list[dict[str, str]] = []
     hidden: list[str] = []
     dde: list[str] = []
     for part in parts:
@@ -325,6 +326,10 @@ def _word(pkg: _Pkg) -> tuple[dict[str, Any], list[Finding]]:
                         deleted.append(f"{part}: {txt[:200]}")
                 else:
                     moves += 1
+                    txt = ""
+                if tag in ("ins", "del") and txt and len(changes) < MAX_SNIPPETS:
+                    changes.append({"type": tag, "author": a or "", "date": _attr(el, "date") or "",
+                                    "text": txt[:200], "part": part})
             elif tag == "r":
                 rpr = next((c for c in el if _ln(c.tag) == "rPr"), None)
                 if rpr is not None:
@@ -354,7 +359,7 @@ def _word(pkg: _Pkg) -> tuple[dict[str, Any], list[Finding]]:
     facts.update({"tracked_insertions": ins, "tracked_deletions": dels, "tracked_moves": moves,
                   "revision_authors": sorted(authors), "track_changes_on": tracking_on,
                   "editing_sessions_rsid": rsids, "comments": n_comments, "comment_authors": comment_authors,
-                  "hidden_text_runs": len(hidden)})
+                  "hidden_text_runs": len(hidden), "tracked_changes": changes})
     if ins or dels or moves:
         findings.append(Finding(
             "office.tracked-changes", f"Tracked changes still stored in the document ({ins} insertion(s), "

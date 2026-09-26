@@ -184,26 +184,37 @@ def _ruled_out(r: dict[str, Any]) -> list[str]:
     ids = {f["id"] for f in r["findings"]}
     cats = {f["category"] for f in r["findings"] if f["severity"] != "info"}
     facts = r.get("facts", {})
+    ran = _completed_analysers(r)
     out = []
     history_uncertain = ids & {"structure.xref-chain-broken", "structure.unlinked-revision",
                                "structure.extra-eof-markers"}
-    if not history_uncertain and not any(
+    if "revisions" in ran and not history_uncertain and not any(
             i.startswith("revisions.") and i not in ("revisions.signature-update", "revisions.metadata-update")
             for i in ids):
         out.append("No page content was changed through appended edits.")
-    if (facts.get("signatures", {}).get("signature_count") and
-            not any(i in ids for i in ("signature.broken", "signature.disallowed-modification",
-                                       "signature.malformed-byterange", "signature.not-validated"))):
+    if ("signatures" in ran and facts.get("signatures", {}).get("signature_count") and
+            not any(i in ids for i in SIGNATURE_DOUBTS)):
         out.append("All validated signatures are cryptographically intact.")
-    if "content" not in cats:
+    if "content" in ran and "content" not in cats:
         out.append("No hidden text, print-only annotations or hidden layers.")
-    if "active-content" not in cats:
+    if "active_content" in ran and "active-content" not in cats:
         out.append("No JavaScript, launch actions, form submission or suspicious attachments.")
-    if "metadata" not in cats:
+    if "metadata" in ran and "metadata" not in cats:
         out.append("Metadata dates and producer information are consistent.")
-    if "structure" not in cats:
+    if "structure" in ran and "structure" not in cats:
         out.append("File structure is sound: no appended or prepended data, and no repairs needed.")
     return out
+
+
+SIGNATURE_DOUBTS = ("signature.broken", "signature.disallowed-modification", "signature.malformed-byterange",
+                    "signature.not-validated", "signature.unparseable", "signature.validation-error",
+                    "signature.validators-disagree", "pdfsig.integrity-failure", "pdfsig.integrity-unknown")
+
+
+def _completed_analysers(r: dict[str, Any]) -> set[str]:
+    """Analysers that produced facts and reported no error. Only their areas can be ruled out."""
+    failed = {e.get("analyzer") for e in r.get("errors", [])}
+    return {name for name in r.get("facts", {}) if name not in failed}
 
 
 def _office_ruled_out(r: dict[str, Any]) -> list[str]:
@@ -211,16 +222,17 @@ def _office_ruled_out(r: dict[str, Any]) -> list[str]:
         return []
     ids = {f["id"] for f in r["findings"]}
     cats = {f["category"] for f in r["findings"] if f["severity"] != "info"}
+    ran = _completed_analysers(r)
     out = []
-    if "office.tracked-changes" not in ids:
+    if "office_content" in ran and "office.tracked-changes" not in ids:
         out.append("No pending tracked changes (no deleted text left in the file).")
-    if "content" not in cats:
+    if "office_content" in ran and "content" not in cats:
         out.append("No hidden text, hidden or very-hidden sheets, or hidden slides.")
-    if "active-content" not in cats:
+    if "office_active" in ran and "active-content" not in cats:
         out.append("No macros, DDE fields, remote templates, external content or embedded objects.")
-    if "metadata" not in cats:
+    if "office_metadata" in ran and "metadata" not in cats:
         out.append("Document properties (dates, editing time) are consistent.")
-    if "structure" not in cats:
+    if "office_container" in ran and "structure" not in cats:
         out.append("Package structure is sound: consistent manifest, no duplicate or disguised parts.")
     return out
 
@@ -231,7 +243,8 @@ def _limitations(r: dict[str, Any]) -> list[str]:
         failed = ", ".join(e["analyzer"] for e in r.get("errors", []))
         out.append(f"Analysis incomplete: {failed} could not run. Absent findings from these checks are not a clean result.")
     ids = {f["id"] for f in r["findings"]}
-    if "signature.not-validated" in ids:
+    if ids & {"signature.not-validated", "signature.validation-error", "signature.unparseable",
+              "pdfsig.integrity-unknown"}:
         out.append("Some signatures could not be verified cryptographically.")
     if "analysis.objects-truncated" in ids or r.get("facts", {}).get("content", {}).get("pages_truncated"):
         out.append("Very large document: some objects or pages were outside the configured scan limits.")
@@ -328,8 +341,11 @@ def batch_summary(reports: list[dict[str, Any]], failures: list[dict[str, str]] 
                      key=lambda x: order[x[1]["level"]], reverse=True)
     pipelines = Counter((r.get("facts", {}).get("fingerprint", {}) or {}).get("pipeline_hash") for r, _ in per)
     total = len(reports) + len(failures)
+    # an incomplete analysis without significant findings is not a clean result; count it apart
+    incomplete = [r for r, s in per if s["level"] not in ATTENTION and not r["verdict"].get("complete", True)]
     headline = (f"{total} document(s) submitted: {len(needing)} need attention, "
-                f"{len(reports) - len(needing)} without significant findings"
+                f"{len(reports) - len(needing) - len(incomplete)} without significant findings"
+                + (f", {len(incomplete)} incomplete (some checks failed)" if incomplete else "")
                 + (f", {len(failures)} could not be analysed" if failures else "") + ".")
     return {
         "headline": headline,
@@ -338,6 +354,7 @@ def batch_summary(reports: list[dict[str, Any]], failures: list[dict[str, str]] 
                              "reason": s["key_findings"][0]["title"] if s["key_findings"] else ""}
                             for r, s in needing],
         "not_analysed": failures,
+        "incomplete": [r["file"]["name"] for r in incomplete],
         "distinct_pipelines": len([p for p in pipelines if p]),
     }
 
