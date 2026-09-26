@@ -111,6 +111,14 @@ def test_signed_document_is_not_reported_as_tampered(analyze):
 
 
 @needs_pyhanko
+def test_signature_validation_uses_explicit_empty_trust_roots(analyze, recwarn):
+    """pyHanko deprecated the implicit fall-back to the OS TLS trust list; trust is not evaluated here."""
+    r = analyze(pdfgen.sign(pdfgen.build()))
+    assert not [w for w in recwarn if "trust list" in str(w.message)]
+    assert finding(r, "signature.intact")["evidence"]["trusted"] is False
+
+
+@needs_pyhanko
 def test_content_change_after_signing_is_critical(analyze):
     signed = pdfgen.sign(pdfgen.build())
     num = pdfgen.content_objnum(signed)
