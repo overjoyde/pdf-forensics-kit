@@ -6,6 +6,8 @@ import json
 from collections import defaultdict
 from typing import Any
 
+from pdfforensics.summary import batch_summary, batch_summary_markdown, summarize, summary_markdown
+
 SEV_TAG = {"critical": "[CRITICAL]", "high": "[HIGH]", "medium": "[MEDIUM]", "low": "[LOW]", "info": "[info]"}
 
 
@@ -68,6 +70,7 @@ def report_markdown(r: dict[str, Any], include_info: bool = True) -> str:
         f"| Producer / Creator | {_md_escape(fp.get('producer') or '-')} / {_md_escape(fp.get('creator') or '-')} |",
         f"| Pipeline fingerprint | `{fp.get('pipeline_hash', '-')}` ({fp.get('producer_family') or 'unclassified'}) |",
         "",
+        summary_markdown(r.get("summary") or summarize(r)),
         "## Findings",
         "",
     ]
@@ -96,6 +99,8 @@ def report_markdown(r: dict[str, Any], include_info: bool = True) -> str:
 
 def batch_markdown(reports: list[dict[str, Any]], failures: list[dict[str, str]]) -> str:
     out = ["# PDF forensic batch summary", "",
+           batch_summary_markdown(batch_summary(reports, failures)),
+           "## Documents", "",
            "| File | Verdict | Revisions | Signatures | Top findings | Pipeline |", "|---|---|---|---|---|---|"]
     groups: dict[str, list[str]] = defaultdict(list)
     for r in reports:

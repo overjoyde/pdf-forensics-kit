@@ -38,6 +38,13 @@ Runtime dependencies: `pikepdf` (MPL-2.0), `pypdf` (BSD), and optionally `pyhank
 # a folder -> JSON + Markdown per file, plus a batch summary grouped by production pipeline
 .venv/bin/pdfforensics analyze ./case-123 -r --out-dir ./case-123-reports
 
+# plain-language summary when the analysis is done (stdout, or a file)
+.venv/bin/pdfforensics analyze ./case-123 --summary
+.venv/bin/pdfforensics analyze invoice.pdf --summary invoice.summary.md
+
+# regenerate summaries later from saved JSON reports
+.venv/bin/pdfforensics summarize ./case-123-reports/*.forensics.json -o case-123-summary.md
+
 # CI / scripting: exit 1 if any document is at or above a level
 .venv/bin/pdfforensics analyze doc.pdf --json - --fail-on high
 
@@ -49,6 +56,21 @@ Runtime dependencies: `pikepdf` (MPL-2.0), `pypdf` (BSD), and optionally `pyhank
 ```
 
 Inputs are never modified. Reports contain SHA-256, size, UTC timestamp and all library versions (chain of custody).
+
+### Summary
+
+Every analysis ends with a generated **summary** (the `summary` key in JSON, the `## Summary` section in Markdown,
+and `<name>.summary.md` with `--out-dir`). It is written for non-technical readers:
+
+- **Headline:** verdict and how many findings need attention, by severity.
+- **Document profile:** pages, producing software, appended edits, signature status.
+- **Key findings:** each with its decisive evidence (e.g. `removed: "Total: 100 SEK"; added: "Total: 9 SEK"`) and the most likely benign explanation.
+- **Checked and found in order:** what the checks ruled out.
+- **Recommended next steps** for the findings present.
+- **Limitations:** incomplete analysis, unverifiable signatures, scan limits, and the general disclaimer.
+
+For several files, an executive summary lists the documents needing attention, most severe first.
+The summary is a pure function of the report, so `pdfforensics summarize` reproduces it exactly from saved JSON.
 
 ## Verdict levels
 

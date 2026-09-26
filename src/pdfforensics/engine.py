@@ -12,7 +12,7 @@ from pathlib import Path
 import pikepdf
 import pypdf
 
-from pdfforensics import document, scoring
+from pdfforensics import document, scoring, summary
 from pdfforensics.model import Confidence, Finding, Report, Severity
 
 
@@ -73,5 +73,8 @@ def analyze_file(path: str | os.PathLike[str], options: document.Options | None 
     finally:
         doc.close()
     findings.sort(key=lambda f: (scoring.effective(f), f.confidence), reverse=True)
-    return Report(file=file_info, tool=_tool_info(), verdict=scoring.verdict(findings, errors),
-                  findings=findings, facts=facts, errors=errors)
+    report = Report(file=file_info, tool=_tool_info(), verdict=scoring.verdict(findings, errors),
+                    findings=findings, facts=facts, errors=errors)
+    # the summary is generated from the finished report, exactly as it would be from saved JSON
+    report.summary = summary.summarize(report.to_dict())
+    return report

@@ -71,12 +71,14 @@ class Report:
     findings: list[Finding]
     facts: dict[str, Any]
     errors: list[dict[str, str]]
+    summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "file": self.file,
             "tool": self.tool,
             "verdict": self.verdict,
+            "summary": self.summary,
             "findings": [f.to_dict() for f in self.findings],
             "facts": self.facts,
             "errors": self.errors,

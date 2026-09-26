@@ -1,6 +1,8 @@
 """Command-line interface.
 
     pdfforensics analyze FILE_OR_DIR... [--json OUT] [--markdown OUT] [--out-dir DIR] [--fail-on LEVEL]
+    pdfforensics analyze FILE --summary [OUT]      # plain-language summary when done
+    pdfforensics summarize REPORT.forensics.json... [-o OUT] [--json OUT]
     pdfforensics compare A.pdf B.pdf [--json OUT]
     pdfforensics extract-revisions FILE.pdf --out-dir DIR
 
@@ -10,10 +12,11 @@ Inputs are only read, never modified. Nothing is written next to the input unles
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from pdfforensics import __version__, document, render
+from pdfforensics import __version__, document, render, summary
 from pdfforensics.compare import compare, compare_markdown
 from pdfforensics.engine import analyze_file
 from pdfforensics.model import Severity
@@ -66,15 +69,19 @@ def cmd_analyze(a: argparse.Namespace) -> int:
             stem = Path(r["file"]["name"]).stem
             (out / f"{stem}.forensics.json").write_text(render.to_json(r) + "\n", encoding="utf-8")
             (out / f"{stem}.forensics.md").write_text(report_md(r, a) + "\n", encoding="utf-8")
+            (out / f"{stem}.summary.md").write_text(_summary_doc([r], []) + "\n", encoding="utf-8")
         if len(files) > 1:
             (out / "batch-summary.md").write_text(render.batch_markdown(reports, failures), encoding="utf-8")
-    payload = reports[0] if len(reports) == 1 and not failures else {"reports": reports, "failures": failures}
+    payload = reports[0] if len(reports) == 1 and not failures else {
+        "summary": summary.batch_summary(reports, failures), "reports": reports, "failures": failures}
     _write(a.json, render.to_json(payload))
     if a.markdown:
         md = report_md(reports[0], a) if len(reports) == 1 else "\n\n".join(
             [render.batch_markdown(reports, failures)] + [report_md(r, a) for r in reports])
         _write(a.markdown, md)
-    if not (a.json or a.markdown or a.out_dir):
+    if a.summary:
+        _write(a.summary, _summary_doc(reports, failures))
+    if not (a.json or a.markdown or a.out_dir or a.summary):
         if len(reports) == 1 and not failures:
             print(report_md(reports[0], a))
         else:
@@ -90,6 +97,48 @@ def cmd_analyze(a: argparse.Namespace) -> int:
 
 def report_md(r: dict, a: argparse.Namespace) -> str:
     return render.report_markdown(r, include_info=not a.hide_info)
+
+
+def _summary_doc(reports: list[dict], failures: list[dict]) -> str:
+    """Stand-alone summary document: an executive summary for batches, then one summary per file."""
+    parts = []
+    if len(reports) + len(failures) > 1:
+        parts += ["# PDF forensic summary", "",
+                  summary.batch_summary_markdown(summary.batch_summary(reports, failures))]
+    for r in reports:
+        s = r.get("summary") or summary.summarize(r)
+        heading = f"# Summary: {r['file']['name']}" if len(reports) == 1 and not failures else f"## {r['file']['name']}"
+        parts.append(summary.summary_markdown(s, heading=heading))
+        parts.append(f"_SHA-256 `{r['file']['sha256']}`, analysed {r['file']['analysed_at']} "
+                     f"with {r['tool']['name']} {r['tool']['version']}._\n")
+    return "\n".join(parts)
+
+
+def cmd_summarize(a: argparse.Namespace) -> int:
+    """Regenerate summaries from saved JSON reports (single reports or batch payloads)."""
+    reports, failures = [], []
+    for p in a.reports:
+        try:
+            data = json.loads(Path(p).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: cannot read {p}: {exc}", file=sys.stderr)
+            return 2
+        if "reports" in data:
+            reports += data["reports"]
+            failures += data.get("failures", [])
+        elif "findings" in data and "file" in data:
+            reports.append(data)
+        else:
+            print(f"error: {p} is not a pdfforensics report", file=sys.stderr)
+            return 2
+    for r in reports:
+        r["summary"] = summary.summarize(r)  # always rebuild with the current rules
+    if a.json:
+        payload = {"summary": summary.batch_summary(reports, failures),
+                   "documents": [r["summary"] for r in reports]}
+        _write(a.json, render.to_json(payload))
+    _write(a.output or ("-" if not a.json else None), _summary_doc(reports, failures))
+    return 0
 
 
 def cmd_compare(a: argparse.Namespace) -> int:
@@ -136,6 +185,8 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--json", metavar="FILE", help="write JSON report ('-' for stdout)")
     an.add_argument("--markdown", metavar="FILE", help="write Markdown report ('-' for stdout)")
     an.add_argument("--out-dir", metavar="DIR", help="write <name>.forensics.json/.md per file (+ batch summary)")
+    an.add_argument("--summary", nargs="?", const="-", metavar="FILE",
+                    help="write a plain-language summary when the analysis is done (stdout if FILE omitted)")
     an.add_argument("--hide-info", action="store_true", help="omit info-level findings from Markdown")
     an.add_argument("--fail-on", choices=list(LEVELS), help="exit 1 if any verdict is at or above this level")
     an.set_defaults(func=cmd_analyze)
@@ -145,6 +196,12 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("b")
     cp.add_argument("--json", metavar="FILE")
     cp.set_defaults(func=cmd_compare)
+
+    sm = sub.add_parser("summarize", help="(re)generate summaries from saved *.forensics.json reports")
+    sm.add_argument("reports", nargs="+")
+    sm.add_argument("-o", "--output", metavar="FILE", help="write the Markdown summary to FILE (default stdout)")
+    sm.add_argument("--json", metavar="FILE", help="also write the summaries as JSON ('-' for stdout)")
+    sm.set_defaults(func=cmd_summarize)
 
     ex = sub.add_parser("extract-revisions", parents=[common], help="write every revision as a standalone PDF")
     ex.add_argument("file")

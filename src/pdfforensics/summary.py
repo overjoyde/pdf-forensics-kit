@@ -1,0 +1,260 @@
+"""Plain-language summary of a finished forensic analysis.
+
+``summarize(report)`` is a pure function of a report dictionary, the same JSON the tool writes.
+It therefore runs automatically at the end of every analysis, and it can also be regenerated
+later from saved JSON reports (``pdfforensics summarize *.forensics.json``).
+
+The summary answers four questions for a non-technical reader:
+  1. What is the outcome? (headline + verdict)
+  2. What was found that matters? (key findings, with the decisive evidence)
+  3. What was checked and found in order? (ruled out)
+  4. What should happen next, and what are the limits? (actions, limitations)
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from typing import Any
+
+SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"]
+ATTENTION = {"medium", "high", "critical"}
+
+# Next steps per finding id (most specific first). Wording is deliberately practical.
+ACTIONS: dict[str, str] = {
+    "revisions.content-changed": ("Extract the earlier revision(s) with `pdfforensics extract-revisions` and compare "
+                                  "them with the current version. Ask the issuer for the original document."),
+    "signature.broken": "Treat the document as altered after signing. Obtain a fresh copy directly from the signer.",
+    "signature.disallowed-modification": ("Ask the signer to confirm the post-signing changes, or obtain the signed "
+                                          "revision (extract-revisions) as the authoritative version."),
+    "signature.malformed-byterange": "Do not rely on the signature. Have the document re-issued and re-signed.",
+    "signature.bytes-after-last-signature": ("Check the revision findings to see whether the unsigned additions change "
+                                             "visible content or are only validation data."),
+    "revisions.annotation-or-form-update": "Review annotations and form values against the original issuer's copy.",
+    "metadata.editor-tool": ("Ask the submitter why the document passed through a general-purpose PDF editor, and "
+                             "request the original file from the issuing system."),
+    "metadata.modified-before-created": "Verify the document dates with the issuer; the timestamps are inconsistent.",
+    "metadata.future-date": "Verify the document dates with the issuer; a timestamp lies in the future.",
+    "content.invisible-text": ("Compare copied/extracted text with what is visible. Automated systems may read the "
+                               "hidden text."),
+    "content.print-only-annotations": "Print or print-preview the document and compare it with the on-screen view.",
+    "content.layer-view-print-differs": "Compare the printed and on-screen versions; layers differ between them.",
+    "active.launch-action": "Open only in a sandboxed viewer, and do not allow external programs to run.",
+    "active.javascript": "Open in a viewer with JavaScript disabled, and do not trust dynamically filled fields.",
+    "active.embedded-files": "Extract the attachments in an isolated environment and review them as separate evidence.",
+    "active.xfa": "Render the form in Adobe Reader and in another viewer; XFA content can differ between viewers.",
+    "active.submit-or-import": "Check where form data is sent before filling in or submitting the form.",
+    "structure.data-after-eof": "Extract the bytes after the final %%EOF for separate inspection.",
+}
+
+
+def _count(findings: list[dict[str, Any]]) -> Counter:
+    return Counter(f["severity"] for f in findings)
+
+
+def _effective(f: dict[str, Any]) -> str:
+    sev = f["severity"]
+    if f["confidence"] == "low" and sev != "info":
+        return SEVERITY_ORDER[SEVERITY_ORDER.index(sev) - 1]
+    return sev
+
+
+def _highlight(f: dict[str, Any]) -> str | None:
+    """One line of the most decisive evidence for a finding."""
+    ev = f.get("evidence") or {}
+    if f["id"] == "revisions.content-changed":
+        removed = [e["text"] for e in ev.get("text_removed", [])][:2]
+        added = [e["text"] for e in ev.get("text_added", [])][:2]
+        if removed or added:
+            parts = []
+            if removed:
+                parts.append("removed: " + " / ".join(f'"{t}"' for t in removed))
+            if added:
+                parts.append("added: " + " / ".join(f'"{t}"' for t in added))
+            return "; ".join(parts)
+        return f"{ev.get('objects_changed', 0)} object(s) changed ({', '.join(ev.get('changed_roles', {}))})"
+    if f["id"].startswith("signature.") and ev.get("summary"):
+        return f"pyHanko: {ev['summary']}"
+    if f["id"] == "signature.bytes-after-last-signature":
+        return f"signed up to byte {ev.get('last_signed_end', 0):,} of {ev.get('file_size', 0):,}"
+    if f["id"] == "metadata.editor-tool":
+        return "tool(s): " + ", ".join(ev.get("tools", []))
+    if f["id"] in ("metadata.modified-before-created", "metadata.info-xmp-date-mismatch"):
+        return f"difference {ev.get('difference')}"
+    for key in ("files", "tools", "layers", "uris"):
+        if ev.get(key):
+            vals = ev[key]
+            return f"{key}: " + ", ".join(str(v) for v in vals[:3]) + (" ..." if len(vals) > 3 else "")
+    if ev.get("pages"):
+        return "pages: " + ", ".join(str(p.get("page")) for p in ev["pages"][:5])
+    return None
+
+
+def _profile(r: dict[str, Any]) -> str:
+    facts = r.get("facts", {})
+    st, rev, sig, fp = (facts.get(k, {}) for k in ("structure", "revisions", "signatures", "fingerprint"))
+    pages = st.get("pages", "?")
+    origin = fp.get("producer_family") or (fp.get("producer") or "unknown software")
+    updates = rev.get("incremental_updates", 0)
+    parts = [f"{pages}-page PDF {st.get('pdf_version', '')} produced by {origin}".replace("  ", " ")]
+    parts.append("no later edits appended" if not updates else f"{updates} later edit(s) appended to the file")
+    n_sig = sig.get("signature_count", 0)
+    if n_sig:
+        validated = sig.get("validation") or []
+        intact = sum(1 for v in validated if v.get("intact"))
+        text = (f"{n_sig} signature(s), {intact} with the signed bytes verified intact" if validated
+                else f"{n_sig} signature(s), not cryptographically verified")
+        if any(f["id"] == "signature.bytes-after-last-signature" for f in r.get("findings", [])):
+            text += ", but data was added after the last signature"
+        parts.append(text)
+    else:
+        parts.append("not digitally signed")
+    return "; ".join(parts) + "."
+
+
+def _ruled_out(r: dict[str, Any]) -> list[str]:
+    ids = {f["id"] for f in r["findings"]}
+    cats = {f["category"] for f in r["findings"] if f["severity"] != "info"}
+    facts = r.get("facts", {})
+    out = []
+    if not any(i.startswith("revisions.") and i not in ("revisions.signature-update", "revisions.metadata-update")
+               for i in ids):
+        out.append("No page content was changed through appended edits.")
+    if (facts.get("signatures", {}).get("signature_count") and
+            not any(i in ids for i in ("signature.broken", "signature.disallowed-modification",
+                                       "signature.malformed-byterange", "signature.not-validated"))):
+        out.append("All validated signatures are cryptographically intact.")
+    if "content" not in cats:
+        out.append("No hidden text, print-only annotations or hidden layers.")
+    if "active-content" not in cats:
+        out.append("No JavaScript, launch actions, form submission or suspicious attachments.")
+    if "metadata" not in cats:
+        out.append("Metadata dates and producer information are consistent.")
+    if "structure" not in cats:
+        out.append("File structure is sound: no appended or prepended data, and no repairs needed.")
+    return out
+
+
+def _limitations(r: dict[str, Any]) -> list[str]:
+    out = []
+    if not r["verdict"].get("complete", True):
+        failed = ", ".join(e["analyzer"] for e in r.get("errors", []))
+        out.append(f"Analysis incomplete: {failed} could not run. Absent findings from these checks are not a clean result.")
+    ids = {f["id"] for f in r["findings"]}
+    if "signature.not-validated" in ids:
+        out.append("Some signatures could not be verified cryptographically.")
+    if "analysis.objects-truncated" in ids or r.get("facts", {}).get("content", {}).get("pages_truncated"):
+        out.append("Very large document: some objects or pages were outside the configured scan limits.")
+    if r.get("facts", {}).get("revisions", {}).get("revisions_skipped"):
+        out.append("Older revisions beyond --max-revisions were not compared.")
+    if r.get("facts", {}).get("signatures", {}).get("signature_count") and not r["tool"].get("pyhanko"):
+        out.append("pyHanko is not installed, so signatures were checked structurally only.")
+    out.append("Structural analysis cannot prove that the content is true; a clean result is not proof of authenticity.")
+    return out
+
+
+def summarize(r: dict[str, Any]) -> dict[str, Any]:
+    """Build the summary for one report dictionary."""
+    findings = r["findings"]
+    attention = [f for f in findings if _effective(f) in ATTENTION]
+    counts = _count(attention)
+    name = r["file"]["name"]
+    label = r["verdict"]["label"]
+    if attention:
+        breakdown = ", ".join(f"{counts[s]} {s}" for s in reversed(SEVERITY_ORDER) if counts.get(s))
+        headline = f"{name}: {label} - {len(attention)} finding(s) need attention ({breakdown})."
+    else:
+        minor = sum(1 for f in findings if _effective(f) == "low")
+        headline = (f"{name}: {label} - no significant findings"
+                    + (f" ({minor} minor anomaly/anomalies noted)." if minor else "."))
+
+    key = []
+    for f in attention[:6]:
+        item = {"id": f["id"], "severity": _effective(f), "title": f["title"]}
+        h = _highlight(f)
+        if h:
+            item["evidence"] = h
+        if f.get("benign_explanations"):
+            item["could_be_benign_if"] = f["benign_explanations"][0]
+        key.append(item)
+
+    actions: list[str] = []
+    for f in attention:
+        a = ACTIONS.get(f["id"])
+        if a and a not in actions:
+            actions.append(a)
+    if not actions:
+        actions.append("No action required from the structural analysis. Apply normal business verification "
+                       "(check with the issuer, and compare with known genuine documents) as usual.")
+
+    return {
+        "headline": headline,
+        "verdict": label,
+        "level": r["verdict"]["level"],
+        "complete": r["verdict"].get("complete", True),
+        "document": _profile(r),
+        "key_findings": key,
+        "ruled_out": _ruled_out(r),
+        "recommended_actions": actions[:6],
+        "limitations": _limitations(r),
+        "sha256": r["file"]["sha256"],
+    }
+
+
+def summary_markdown(s: dict[str, Any], heading: str = "## Summary") -> str:
+    out = [heading, "", f"**{s['headline']}**", "", s["document"], ""]
+    if s["key_findings"]:
+        out += ["**Key findings**", ""]
+        for k in s["key_findings"]:
+            line = f"- [{k['severity'].upper()}] {k['title']}"
+            if k.get("evidence"):
+                line += f": {k['evidence']}"
+            if k.get("could_be_benign_if"):
+                b = k["could_be_benign_if"]
+                line += f" _(benign if: {b[:1].lower() + b[1:]})_"
+            out.append(line)
+        out.append("")
+    if s["ruled_out"]:
+        out += ["**Checked and found in order**", ""] + [f"- {x}" for x in s["ruled_out"]] + [""]
+    out += ["**Recommended next steps**", ""] + [f"{i}. {a}" for i, a in enumerate(s["recommended_actions"], 1)] + [""]
+    out += ["**Limitations**", ""] + [f"- {x}" for x in s["limitations"]] + [""]
+    return "\n".join(out)
+
+
+def batch_summary(reports: list[dict[str, Any]], failures: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    failures = failures or []
+    per = [(r, r.get("summary") or summarize(r)) for r in reports]
+    verdicts = Counter(s["verdict"] for _, s in per)
+    order = {lvl: i for i, lvl in enumerate(SEVERITY_ORDER)}
+    needing = sorted((x for x in per if x[1]["level"] in ATTENTION),
+                     key=lambda x: order[x[1]["level"]], reverse=True)
+    pipelines = Counter((r.get("facts", {}).get("fingerprint", {}) or {}).get("pipeline_hash") for r, _ in per)
+    total = len(reports) + len(failures)
+    headline = (f"{total} document(s) submitted: {len(needing)} need attention, "
+                f"{len(reports) - len(needing)} without significant findings"
+                + (f", {len(failures)} could not be analysed" if failures else "") + ".")
+    return {
+        "headline": headline,
+        "verdict_counts": dict(verdicts),
+        "needs_attention": [{"file": r["file"]["name"], "verdict": s["verdict"],
+                             "reason": s["key_findings"][0]["title"] if s["key_findings"] else ""}
+                            for r, s in needing],
+        "not_analysed": failures,
+        "distinct_pipelines": len([p for p in pipelines if p]),
+    }
+
+
+def batch_summary_markdown(b: dict[str, Any]) -> str:
+    out = ["## Executive summary", "", f"**{b['headline']}**", ""]
+    if b["verdict_counts"]:
+        out.append("Verdicts: " + ", ".join(f"`{k}` x{v}" for k, v in sorted(b["verdict_counts"].items())))
+        out.append("")
+    if b["needs_attention"]:
+        out += ["**Needs attention (most severe first)**", ""]
+        out += [f"- {x['file']}: `{x['verdict']}` - {x['reason']}" for x in b["needs_attention"]]
+        out.append("")
+    if b["not_analysed"]:
+        out += ["**Not analysed**", ""] + [f"- {x['file']}: {x['error']}" for x in b["not_analysed"]] + [""]
+    out.append(f"The documents come from {b['distinct_pipelines']} distinct production pipeline(s). Documents that "
+               "claim the same issuer but fall into different pipelines deserve a closer look.")
+    out.append("")
+    return "\n".join(out)
