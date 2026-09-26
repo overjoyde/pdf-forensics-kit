@@ -44,7 +44,7 @@ def _when(e: dict[str, Any]) -> str:
 def _change_cell(e: dict[str, Any]) -> str:
     before, after = e.get("before") or [], e.get("after") or []
     if e.get("paired") and len(before) == len(after):  # never drop an unmatched line
-        return "<br/>".join(f"{_t(b, 200)} &rarr; <b>{_t(a, 200)}</b>" for b, a in zip(before, after))
+        return "<br/><br/>".join(f"{_t(b, 200)}<br/>&rarr; <b>{_t(a, 200)}</b>" for b, a in zip(before, after))
     parts = []
     if before:
         parts.append("<i>Before:</i><br/>" + "<br/>".join(_t(b, 200) for b in before))
