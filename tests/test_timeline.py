@@ -4,6 +4,7 @@ import importlib
 
 import pytest
 
+import officegen
 import pdfgen
 from conftest import finding, ids
 
@@ -43,3 +44,19 @@ def test_each_revision_records_its_claimed_save_time(analyze):
     assert times[2]["info_mod"] == "2026-03-10T12:15:00+01:00"
     assert times[2]["producer"] == "Acme PDF Editor 3"
     assert times[1]["info_mod"] != times[2]["info_mod"]
+
+
+TRACKED = ('<w:p><w:r><w:t>Invoice total: </w:t></w:r>'
+           '<w:del w:id="1" w:author="Anna Andersson" w:date="2026-03-02T09:15:00Z">'
+           '<w:r><w:delText>100 SEK</w:delText></w:r></w:del>'
+           '<w:ins w:id="2" w:author="Anna Andersson" w:date="2026-03-02T09:15:00Z">'
+           '<w:r><w:t>900 SEK</w:t></w:r></w:ins></w:p>')
+
+
+def test_word_tracked_changes_are_kept_individually(analyze):
+    r = analyze(officegen.build("docx", main=officegen.word_body(TRACKED)), name="doc.docx")
+    changes = r["facts"]["office_content"]["tracked_changes"]
+    assert [(c["type"], c["author"], c["date"], c["text"]) for c in changes] == [
+        ("del", "Anna Andersson", "2026-03-02T09:15:00Z", "100 SEK"),
+        ("ins", "Anna Andersson", "2026-03-02T09:15:00Z", "900 SEK"),
+    ]
