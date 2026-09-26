@@ -132,3 +132,15 @@ def test_revision_that_could_not_be_opened_stays_in_the_timeline():
     events = timeline.build(facts, "pdf").facts["events"]
     assert [(e["kind"], e["revision"]) for e in events if e["kind"] == "unreadable-revision"] == [
         ("unreadable-revision", 2)]
+
+
+def test_pdf_report_without_reportlab_exits_2(tmp_path, monkeypatch, capsys):
+    from pdfforensics import pdfreport
+    from pdfforensics.cli import main
+    monkeypatch.setattr(pdfreport, "available", lambda: False)
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(pdfgen.build())
+    out = tmp_path / "r.pdf"
+    assert main(["analyze", str(src), "--no-prompt", "--no-external-tools", "--pdf-report", str(out)]) == 2
+    assert not out.exists()
+    assert "pdf-forensics-kit[report]" in capsys.readouterr().err

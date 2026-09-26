@@ -226,7 +226,7 @@ Requires Python 3.10 or later.
 git clone https://github.com/overjoyde/pdf-forensics-kit.git
 cd pdf-forensics-kit
 python3 -m venv .venv
-.venv/bin/pip install -e '.[signatures]'      # add ,dev for the test suite
+.venv/bin/pip install -e '.[signatures]'      # add ,report for PDF reports, ,dev for the test suite
 .venv/bin/pdfforensics --version
 ```
 
@@ -235,6 +235,7 @@ python3 -m venv .venv
 | `pikepdf` (qpdf) | yes | Low-level PDF structure | MPL-2.0 |
 | `pypdf` | yes | Text of each PDF revision | BSD |
 | `pyhanko` | optional (`[signatures]`) | Cryptographic PDF signature validation | MIT |
+| `reportlab` | optional (`[report]`) | PDF report output | BSD |
 | Poppler `pdfsig` | optional (`brew install poppler` / `apt install poppler-utils`) | Second signature validator: trust and revocation | GPL (separate program, called as a tool) |
 
 Office analysis uses only the Python standard library. There is no AGPL code and nothing phones home.
@@ -279,6 +280,7 @@ pdfforensics analyze ./inbox --json - --fail-on high
 | `--out-dir DIR` | Write JSON, report and summary per file (plus `batch-summary.md`) |
 | `--json FILE` / `--markdown FILE` | Write the JSON or Markdown report (`-` for stdout) |
 | `--summary [FILE]` | Output only the plain-language summary |
+| `--pdf-report PATH` | Write a summarised PDF report with the verdict, key findings and the edit timeline (a directory when several files are analysed). Needs `pip install 'pdf-forensics-kit[report]'` |
 | `--hide-info` | Leave info-level findings out of the Markdown |
 | `--save-report` | Save `<document>.forensics-report.md` next to each document without asking |
 | `--no-prompt` | Never ask whether to save a report (for scripts). In a terminal, `analyze` otherwise asks after the analysis |

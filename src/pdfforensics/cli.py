@@ -4,6 +4,7 @@
     pdfforensics analyze FILE_OR_DIR... [--json OUT] [--markdown OUT] [--out-dir DIR] [--fail-on LEVEL]
                          [--fail-on-incomplete]
     pdfforensics analyze FILE --summary [OUT]      # plain-language summary when done
+    pdfforensics analyze FILE --pdf-report OUT.pdf # summarised PDF report (needs the [report] extra)
     pdfforensics summarize REPORT.forensics.json... [-o OUT] [--json OUT]
     pdfforensics compare A.pdf B.pdf [--json OUT]
     pdfforensics extract-revisions FILE.pdf --out-dir DIR
@@ -60,6 +61,11 @@ def _write(target: str | None, text: str) -> None:
 
 
 def cmd_analyze(a: argparse.Namespace) -> int:
+    if a.pdf_report:
+        from pdfforensics import pdfreport
+        if not pdfreport.available():
+            print(pdfreport.INSTALL_HINT, file=sys.stderr)
+            return 2
     files = _collect(a.paths, a.recursive)
     if not files:
         print("no PDF files found", file=sys.stderr)
@@ -90,8 +96,16 @@ def cmd_analyze(a: argparse.Namespace) -> int:
         _write(a.markdown, md)
     if a.summary:
         _write(a.summary, _summary_doc(reports, failures))
+    if a.pdf_report and reports:
+        from pdfforensics import pdfreport
+        target = Path(a.pdf_report)
+        if len(reports) == 1 and not target.is_dir():
+            pdfreport.write_pdf_report(reports[0], target)
+        else:
+            for r in reports:
+                pdfreport.write_pdf_report(r, target / f"{report_basename(r)}.forensics-report.pdf")
     _maybe_save_reports(a, reports, failures)
-    if not (a.json or a.markdown or a.out_dir or a.summary):
+    if not (a.json or a.markdown or a.out_dir or a.summary or a.pdf_report):
         if len(reports) == 1 and not failures:
             print(report_md(reports[0], a))
         else:
@@ -230,6 +244,9 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--out-dir", metavar="DIR", help="write <name>.forensics.json/.md per file (+ batch summary)")
     an.add_argument("--summary", nargs="?", const="-", metavar="FILE",
                     help="write a plain-language summary when the analysis is done (stdout if FILE omitted)")
+    an.add_argument("--pdf-report", metavar="PATH",
+                    help="write a summarised PDF report (a directory when several files are analysed); "
+                         "needs the [report] extra")
     an.add_argument("--hide-info", action="store_true", help="omit info-level findings from Markdown")
     an.add_argument("--save-report", action="store_true",
                     help="save a Markdown report next to each analysed document, without asking")
