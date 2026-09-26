@@ -1,4 +1,4 @@
-import importlib.util
+import importlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -88,7 +88,16 @@ def test_raw_parser_revision_boundaries_are_standalone_files():
 
 # ---------------------------------------------------------------- signatures
 
-needs_pyhanko = pytest.mark.skipif(importlib.util.find_spec("pyhanko") is None, reason="pyHanko not installed")
+def _have_pyhanko() -> bool:
+    # find_spec("pyhanko") is not enough: after an uninstall a namespace remnant can remain
+    try:
+        importlib.import_module("pyhanko.sign")
+        return True
+    except ImportError:
+        return False
+
+
+needs_pyhanko = pytest.mark.skipif(not _have_pyhanko(), reason="pyHanko not installed")
 
 
 @needs_pyhanko
