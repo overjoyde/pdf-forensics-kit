@@ -164,7 +164,21 @@ def analyze(doc: Document) -> AnalyzerResult:
     sig_ends = signature_ends(doc)
     to_analyse = revisions[-doc.options.max_revisions:]
     if len(to_analyse) < len(revisions):
-        res.facts["revisions_skipped"] = len(revisions) - len(to_analyse)
+        # Keep the original as the baseline, so changes inside the skipped range still show up
+        # in the comparison with the oldest revision that is analysed.
+        to_analyse = [revisions[0]] + revisions[-max(doc.options.max_revisions - 1, 1):]
+        skipped = len(revisions) - len(to_analyse)
+        res.facts["revisions_skipped"] = skipped
+        res.findings.append(Finding(
+            id="revisions.not-all-compared",
+            title=f"{skipped} intermediate revision(s) not compared individually",
+            severity=Severity.LOW, confidence=Confidence.HIGH, category="revisions",
+            explanation=("The file has more revisions than the configured limit (--max-revisions). The original "
+                         "is compared with the oldest analysed revision, so content changes in the skipped range "
+                         "still show up, but they are not attributed to a specific revision."),
+            evidence={"revision_count": len(revisions), "skipped": skipped,
+                      "max_revisions": doc.options.max_revisions},
+            benign_explanations=["Long-lived form or workflow document with many small saves"]))
 
     prev_digests: dict[tuple[int, int], str] | None = None
     prev_text: list[str] | None = None

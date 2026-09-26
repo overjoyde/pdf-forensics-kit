@@ -27,11 +27,14 @@ _EOF_RE = re.compile(rb"%%EOF")
 _LINEARIZED_RE = re.compile(rb"/Linearized\s")
 _FIRST_OBJ_RE = re.compile(rb"(\d+)\s+(\d+)\s+obj\b")
 _STREAM_START_RE = re.compile(rb">>\s*stream(?:\r\n|\n|\r)")
-_DIRECT_LENGTH_RE = re.compile(rb"/Length\s+(\d+)(?!\s+\d+\s+R)")
+_DIRECT_LENGTH_RE = re.compile(rb"/Length\s+(\d+)(?!\d)(?!\s+\d+\s+R)")
 _LIN_E_RE = re.compile(rb"/E\s+(\d+)")
 _SUBSECTION_RE = re.compile(rb"(\d+)\s+(\d+)\s*[\r\n]")
 
 MAX_SECTIONS = 2000
+MAX_UNLINKED_CANDIDATES = 4 * MAX_SECTIONS   # startxref markers examined outside the chain
+_HEADER_WINDOW = 4096                        # how far back a stream's dictionary is looked for
+_XREF_STREAM_WINDOW = 8192                   # how far an xref stream's dictionary may extend
 
 
 @dataclass
@@ -182,12 +185,16 @@ def _stream_spans(data: bytes) -> list[tuple[int, int]]:
     """
     spans: list[tuple[int, int]] = []
     pos = 0
-    while len(spans) < 1_000_000:
+    while True:
         m = _STREAM_START_RE.search(data, pos)
         if not m:
             break
         start = m.end()
-        header = data[data.rfind(b"obj", 0, m.start()) + 3:m.start()]
+        # The dictionary lies between the object header and "stream". Looking back is bounded by
+        # the previous stream's end and a fixed window, so the scan stays linear in the file size.
+        lo = max(pos, m.start() - _HEADER_WINDOW)
+        obj = data.rfind(b"obj", lo, m.start())
+        header = data[obj + 3 if obj != -1 else lo:m.start()]
         length = _DIRECT_LENGTH_RE.search(header)
         end = -1
         if length:
@@ -209,33 +216,49 @@ def _inside_stream(pos: int, spans: list[tuple[int, int]], starts: list[int]) ->
 
 
 def _is_xref_section(data: bytes, offset: int) -> bool:
+    """A classic table, or an object whose dictionary (within a bounded window) is /XRef."""
     if data[offset:offset + 4] == b"xref":
         return True
-    try:
-        _parse_stream(data, offset)
-    except ValueError:
-        return False
-    return True
+    window = data[offset:offset + _XREF_STREAM_WINDOW]
+    kw = window.find(b"stream")
+    return kw != -1 and _OBJ_HEADER_RE.match(window) is not None and b"/XRef" in window[:kw]
 
 
-def _unlinked_ends(data: bytes, known_ends: list[int], header_offset: int) -> list[int]:
-    """Ends of earlier file versions closed by a startxref the /Prev chain does not reach."""
+def _near(sorted_values: list[int], value: int, tolerance: int = 4) -> bool:
+    i = bisect.bisect_left(sorted_values, value - tolerance)
+    return i < len(sorted_values) and sorted_values[i] <= value + tolerance
+
+
+def _unlinked_ends(data: bytes, sections: list[XrefSection], header_offset: int) -> tuple[list[int], bool]:
+    """Ends of earlier file versions closed by a startxref the /Prev chain does not reach.
+
+    Returns (ends, exhausted); exhausted means the candidate budget ran out before the end.
+    """
     spans = _stream_spans(data)
     starts = [a for a, _ in spans]
+    known_ends = sorted(s.end for s in sections)
+    known_offsets = {s.offset for s in sections}
+    checked: dict[int, bool] = {}
     found: list[int] = []
+    examined = 0
     for m in _STARTXREF_RE.finditer(data):
-        if len(found) >= MAX_SECTIONS:
-            break
         end = _eol_end(data, m.end())
-        if any(abs(end - k) <= 4 for k in known_ends + found):
+        if _near(known_ends, end) or (found and abs(end - found[-1]) <= 4):
             continue
+        examined += 1
+        if examined > MAX_UNLINKED_CANDIDATES or len(found) >= MAX_SECTIONS:
+            return found, True
         if _inside_stream(m.start(), spans, starts):
             continue
         target = _resolve_offset(data, int(m.group(1)), max(header_offset, 0))
-        if target is None or target >= m.start() or not _is_xref_section(data, target):
+        # a target already in the chain is not a separate version (e.g. a PDF attaching itself)
+        if target is None or target >= m.start() or target in known_offsets:
             continue
-        found.append(end)
-    return found
+        if target not in checked:
+            checked[target] = _is_xref_section(data, target)
+        if checked[target]:
+            found.append(end)
+    return found, False
 
 
 def parse(data: bytes) -> RawStructure:
@@ -300,8 +323,12 @@ def parse(data: bytes) -> RawStructure:
         sec = min(sections, key=lambda x: x.offset)
         closing = data.rfind(b"startxref", sec.offset, sec.end)
         closes_with_zero = closing != -1 and re.match(rb"startxref\s+0\s", data[closing:closing + 16])
-        links_forward = sec.prev is not None and sec.prev > sec.offset
-        if links_forward and ((lin_e is not None and sec.offset < lin_e) or closes_with_zero):
+        # /Prev and /E are written as nominal offsets; resolve them the same way the chain does
+        shift = max(header_offset, 0)
+        prev = _resolve_offset(data, sec.prev, shift) if sec.prev is not None else None
+        links_forward = prev is not None and prev > sec.offset
+        before_e = lin_e is not None and sec.offset < lin_e + shift
+        if links_forward and (before_e or closes_with_zero):
             sec.linearization_first_page = True
 
     revisions: list[Revision] = []
@@ -313,8 +340,10 @@ def parse(data: bytes) -> RawStructure:
     for sec in sections:
         if sec.linearization_first_page and revisions:
             revisions[0].sections.insert(0, sec)
-    known = [s.end for s in sections]
-    for end in _unlinked_ends(data, known, header_offset):
+    unlinked, exhausted = _unlinked_ends(data, sections, header_offset)
+    if exhausted:
+        chain_errors.append("too many startxref markers outside the chain; not all were examined")
+    for end in unlinked:
         revisions.append(Revision(index=0, end=end, recovered=True))
     revisions.sort(key=lambda r: r.end)
     for i, r in enumerate(revisions, 1):
