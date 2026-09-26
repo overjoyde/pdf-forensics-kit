@@ -130,6 +130,58 @@ def append_unlinked_update(data: bytes, new_objects: dict[int, bytes]) -> bytes:
     return bytes(out)
 
 
+def flate_bomb_obj(mib: int, extra: bytes = b"") -> bytes:
+    """A FlateDecode stream object of spaces that expands to ``mib`` MiB (about 1 KiB per MiB on disk)."""
+    c = zlib.compressobj(9)
+    comp = b"".join(c.compress(b" " * (1 << 20)) for _ in range(mib)) + c.flush()
+    return (b"<< /Length %d /Filter /FlateDecode " % len(comp)) + extra + b" >>\nstream\n" + comp + b"\nendstream"
+
+
+def lzw_encode(data: bytes) -> bytes:
+    """PDF LZWDecode encoding (EarlyChange 1), for fixtures of older files."""
+    table = {bytes([i]): i for i in range(256)}
+    nxt, width, acc, nbits, out = 258, 9, 0, 0, bytearray()
+
+    def emit(code: int) -> None:
+        nonlocal acc, nbits
+        acc, nbits = (acc << width) | code, nbits + width
+        while nbits >= 8:
+            nbits -= 8
+            out.append((acc >> nbits) & 0xFF)
+
+    emit(256)
+    w = b""
+    for c in data:
+        wc = w + bytes([c])
+        if wc in table:
+            w = wc
+            continue
+        emit(table[w])
+        table[wc] = nxt
+        nxt += 1
+        if nxt + 1 > (1 << width) and width < 12:
+            width += 1
+        if nxt >= 4094:
+            emit(256)
+            table, nxt, width = {bytes([i]): i for i in range(256)}, 258, 9
+        w = bytes([c])
+    if w:
+        emit(table[w])
+    emit(257)
+    if nbits:
+        out.append((acc << (8 - nbits)) & 0xFF)
+    return bytes(out)
+
+
+def with_metadata_stream(data: bytes, body: bytes) -> bytes:
+    """Point the catalog's /Metadata at a new stream object with the given body."""
+    with pikepdf.open(io.BytesIO(data)) as pdf:
+        root_num = pdf.Root.objgen[0]
+        root_body = pdf.Root.unparse(resolved=True)
+    size = int(re.findall(rb"/Size\s+(\d+)", data)[-1])
+    return append_update(data, {size: body, root_num: root_body[:-2] + b" /Metadata %d 0 R >>" % size})
+
+
 def stream_obj(content: bytes) -> bytes:
     return b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream"
 
