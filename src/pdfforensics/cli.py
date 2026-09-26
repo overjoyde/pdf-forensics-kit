@@ -101,6 +101,9 @@ def cmd_analyze(a: argparse.Namespace) -> int:
         threshold = LEVELS[a.fail_on]
         if any(LEVELS[r["verdict"]["level"]] >= threshold for r in reports):
             return 1
+        # a check that failed, or a file that could not be analysed, is never a pass
+        if failures or any(not r["verdict"].get("complete", True) for r in reports):
+            return 1
     return 0
 
 
@@ -231,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="save a Markdown report next to each analysed document, without asking")
     an.add_argument("--no-prompt", action="store_true",
                     help="never ask whether to save a report (for scripts)")
-    an.add_argument("--fail-on", choices=list(LEVELS), help="exit 1 if any verdict is at or above this level")
+    an.add_argument("--fail-on", choices=list(LEVELS), help="exit 1 if any verdict is at or above this level, or if any analysis is incomplete")
     an.set_defaults(func=cmd_analyze)
 
     cp = sub.add_parser("compare", parents=[common], help="compare two PDFs")

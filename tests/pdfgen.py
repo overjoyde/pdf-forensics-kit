@@ -213,7 +213,13 @@ ORPHAN_FONT = b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>"
 
 # ------------------------------------------------------------------ signing (pyHanko)
 
-def sign(data: bytes) -> bytes:
+def corrupt_first_signature(data: bytes) -> bytes:
+    """Overwrite the first signature's CMS container with zeros (same length, so offsets hold)."""
+    m = re.search(rb"/Contents\s*<([0-9a-fA-F]+)>", data)
+    return data[:m.start(1)] + b"30" + b"0" * (len(m.group(1)) - 2) + data[m.end(1):]
+
+
+def sign(data: bytes, field_name: str = "Sig1") -> bytes:
     from asn1crypto import keys as a_keys
     from asn1crypto import x509 as a_x509
     from cryptography import x509
@@ -239,5 +245,5 @@ def sign(data: bytes) -> bytes:
             serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())),
         cert_registry=SimpleCertificateStore())
     w = IncrementalPdfFileWriter(io.BytesIO(data))
-    out = signers.sign_pdf(w, signers.PdfSignatureMetadata(field_name="Sig1"), signer=signer)
+    out = signers.sign_pdf(w, signers.PdfSignatureMetadata(field_name=field_name), signer=signer)
     return out.getvalue()

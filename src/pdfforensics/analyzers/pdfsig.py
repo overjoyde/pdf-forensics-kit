@@ -172,6 +172,14 @@ def analyze(doc: Document) -> AnalyzerResult:
                 severity=Severity.CRITICAL, confidence=Confidence.HIGH, category="signatures",
                 explanation="Poppler reports a digest mismatch or invalid signature. The signed bytes were altered.",
                 evidence=ev))
+        elif s["integrity"] == "unknown":
+            res.findings.append(Finding(
+                id="pdfsig.integrity-unknown", title=f"pdfsig: integrity of signature '{label}' could not be determined",
+                severity=Severity.MEDIUM, confidence=Confidence.LOW, category="signatures",
+                explanation=("Poppler did not verify this signature, so this validator says nothing about whether the "
+                             "signed bytes are intact. A damaged or unsupported signature container causes this."),
+                evidence=ev,
+                benign_explanations=["Signature format Poppler does not support"]))
         if s["trust"] == "revoked":
             res.findings.append(Finding(
                 id="pdfsig.certificate-revoked", title=f"pdfsig: signing certificate for '{label}' is revoked",

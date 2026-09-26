@@ -138,8 +138,9 @@ def batch_markdown(reports: list[dict[str, Any]], failures: list[dict[str, str]]
             oc = r["facts"].get("office_content", {})
             history = f"{oc.get('tracked_insertions', 0) + oc.get('tracked_deletions', 0)} tracked" if oc else "-"
             sigs = len(r["facts"].get("office_active", {}).get("xml_signature_parts", [])) or 0
-        out.append("| {} | {} | `{}` | {} | {} | {} | `{}` |".format(
-            _md_escape(r["file"]["name"]), (r["file"].get("kind") or "pdf").upper(), r["verdict"]["label"],
+        verdict = f"`{r['verdict']['label']}`" + ("" if r["verdict"].get("complete", True) else " (incomplete)")
+        out.append("| {} | {} | {} | {} | {} | {} | `{}` |".format(
+            _md_escape(r["file"]["name"]), (r["file"].get("kind") or "pdf").upper(), verdict,
             history, sigs, ", ".join(r["verdict"]["top_findings"][:3]) or "-", fp.get("pipeline_hash", "?")))
     for fl in failures:
         out.append(f"| {_md_escape(fl['file'])} | - | `not-analysed` | - | - | {_md_escape(fl['error'])} | - |")

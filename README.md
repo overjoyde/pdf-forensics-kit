@@ -214,7 +214,7 @@ the summary exactly.
 
 ### Exit codes
 
-`0` success · `1` a verdict reached the `--fail-on` level · `2` input error (not found, unsupported, unreadable)
+`0` success · `1` a verdict reached the `--fail-on` level, or (with `--fail-on`) an analysis was incomplete or a file could not be analysed · `2` input error (not found, unsupported, unreadable)
 
 ---
 
@@ -282,7 +282,7 @@ pdfforensics analyze ./inbox --json - --fail-on high
 | `--hide-info` | Leave info-level findings out of the Markdown |
 | `--save-report` | Save `<document>.forensics-report.md` next to each document without asking |
 | `--no-prompt` | Never ask whether to save a report (for scripts). In a terminal, `analyze` otherwise asks after the analysis |
-| `--fail-on LEVEL` | Exit with 1 if any verdict is at or above `low`/`medium`/`high`/`critical` |
+| `--fail-on LEVEL` | Exit with 1 if any verdict is at or above `low`/`medium`/`high`/`critical`, or if any analysis is incomplete |
 | `--password PW` | User password for encrypted PDFs |
 | `--no-external-tools` | Do not run Poppler `pdfsig`, even if installed |
 | `--online-revocation` | Let `pdfsig` contact OCSP servers to check revocation (**network access**, off by default) |
@@ -425,8 +425,8 @@ Known limits:
 | input (all formats) | `extension-mismatch`, `changed-after-capture` |
 | PDF structure | `data-before-header`, `data-after-eof`, `extra-eof-markers`, `repaired`, `unreachable-objects`, `encrypted`, `xref-chain-broken`, `unlinked-revision` |
 | PDF revisions | `content-changed` (with text diff), `annotation-or-form-update`, `metadata-update`, `signature-update`, `other-update`, `not-all-compared` |
-| PDF signatures (pyHanko) | `intact`, `broken`, `disallowed-modification`, `bytes-after-last-signature`, `malformed-byterange`, `usage-rights`, `not-validated`, `validation-error` |
-| PDF signatures (pdfsig, optional) | `integrity-ok`, `integrity-failure`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
+| PDF signatures (pyHanko) | `intact`, `broken`, `disallowed-modification`, `bytes-after-last-signature`, `malformed-byterange`, `usage-rights`, `not-validated`, `validation-error`, `unparseable` |
+| PDF signatures (pdfsig, optional) | `integrity-ok`, `integrity-failure`, `integrity-unknown`, `certificate-revoked`, `certificate-expired`; `signature.validators-disagree` |
 | PDF metadata | `modified-before-created`, `future-date`, `info-xmp-date-mismatch`, `producer-mismatch`, `editor-tool`, `manipulation-library`, `xmp-history`, `absent` |
 | PDF content | `invisible-text`, `ocr-text-layer`, `print-only-annotations`, `hidden-annotations`, `layer-view-print-differs`, `layers-hidden-by-default` |
 | PDF active content | `javascript`, `launch-action`, `submit-or-import`, `remote-goto`, `multimedia`, `xfa`, `embedded-files`, `e-invoice-attachment`, `additional-actions`, `uris` |
