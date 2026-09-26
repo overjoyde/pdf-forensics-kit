@@ -16,7 +16,8 @@ import pikepdf
 
 from pdfforensics.document import Document, open_bytes
 from pdfforensics.model import AnalyzerResult, Confidence, Finding, Severity
-from pdfforensics.pdfutil import object_digest, role_map
+from pdfforensics.analyzers.metadata import read_xmp
+from pdfforensics.pdfutil import iso, object_digest, parse_pdf_date, parse_xmp_date, role_map, s
 
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
@@ -121,6 +122,25 @@ def _matches_end(rev_end: int, sig_end: int, data: bytes) -> bool:
     return hi - lo <= 4 and data[lo:hi].strip(b" \r\n\x00") == b""
 
 
+def _claimed_times(pdf: pikepdf.Pdf) -> dict[str, Any]:
+    """Save times a revision states about itself. Written by software, so forgeable."""
+    out: dict[str, Any] = {"info_mod": None, "info_created": None, "xmp_modify": None, "producer": ""}
+    try:
+        info = pdf.docinfo
+        out["info_mod"] = iso(parse_pdf_date(s(info.get("/ModDate"))))
+        out["info_created"] = iso(parse_pdf_date(s(info.get("/CreationDate"))))
+        out["producer"] = s(info.get("/Producer"), 200)
+    except Exception:
+        pass
+    try:
+        xmp, _ = read_xmp(pdf)
+        if xmp and xmp.get("modify_date"):
+            out["xmp_modify"] = iso(parse_xmp_date(xmp["modify_date"]))
+    except Exception:
+        pass
+    return out
+
+
 def analyze(doc: Document) -> AnalyzerResult:
     res = AnalyzerResult(name="revisions")
     rs = doc.raw
@@ -159,6 +179,10 @@ def analyze(doc: Document) -> AnalyzerResult:
                                  "Two PDF files concatenated during transfer"],
         ))
     if len(revisions) <= 1:
+        try:
+            res.facts["revision_times"] = [{"revision": 1, "end": len(doc.data), **_claimed_times(doc.pdf)}]
+        except Exception:
+            pass
         return res
 
     sig_ends = signature_ends(doc)
@@ -186,6 +210,7 @@ def analyze(doc: Document) -> AnalyzerResult:
     updates_prev_end = 0
     prev_page_core: dict = {}
 
+    revision_times: list[dict[str, Any]] = []
     for rev in to_analyse:
         chunk = doc.data[:rev.end]
         try:
@@ -196,6 +221,7 @@ def analyze(doc: Document) -> AnalyzerResult:
             continue
         try:
             digests, page_core, truncated = _snapshot(pdf, doc.options.max_objects)
+            revision_times.append({"revision": rev.index, "end": rev.end, **_claimed_times(pdf)})
             try:
                 text = extract_text_by_page(chunk, doc.options.max_pages)
             except Exception as exc:
@@ -237,6 +263,7 @@ def analyze(doc: Document) -> AnalyzerResult:
             pdf.close()
 
     res.facts["updates"] = updates
+    res.facts["revision_times"] = revision_times
     last_sig_end = max(sig_ends) if sig_ends else None
 
     for u in updates:
