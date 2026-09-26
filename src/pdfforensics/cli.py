@@ -1,5 +1,6 @@
 """Command-line interface.
 
+    pdfforensics                                   # interactive shell (also: pdfforensics shell)
     pdfforensics analyze FILE_OR_DIR... [--json OUT] [--markdown OUT] [--out-dir DIR] [--fail-on LEVEL]
     pdfforensics analyze FILE --summary [OUT]      # plain-language summary when done
     pdfforensics summarize REPORT.forensics.json... [-o OUT] [--json OUT]
@@ -178,7 +179,8 @@ def cmd_extract(a: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pdfforensics",
-                                description="Explainable tampering and provenance analysis for PDF and Office documents.")
+                                description="Explainable tampering and provenance analysis for PDF and Office documents.",
+                                epilog="Run without arguments (or 'pdfforensics shell') to start the interactive shell.")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--password", help="user password for encrypted PDFs")
@@ -225,6 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv or argv == ["shell"]:
+        from pdfforensics import repl
+
+        return repl.run()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

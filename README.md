@@ -31,6 +31,7 @@ Everything runs offline on your machine. The document is never uploaded, modifie
 - [What you get](#what-you-get)
 - [Install](#install)
 - [Usage](#usage)
+- [Interactive shell](#interactive-shell)
 - [How to read the results](#how-to-read-the-results)
 - [Safety and privacy](#safety-and-privacy)
 - [Supported formats and limitations](#supported-formats-and-limitations)
@@ -229,6 +230,9 @@ Office analysis uses only the Python standard library. There is no AGPL code and
 ## Usage
 
 ```bash
+# Interactive shell (see below)
+pdfforensics
+
 # One file: full Markdown report in the terminal
 pdfforensics analyze invoice.pdf
 
@@ -266,6 +270,58 @@ pdfforensics analyze ./inbox --json - --fail-on high
 | `--max-pages`, `--max-objects`, `--max-revisions` | Scan limits for very large files. Hitting a limit is reported, never hidden |
 
 The analysis is also available from Python: `from pdfforensics import analyze_file; analyze_file("x.pdf").to_dict()`.
+
+---
+
+## Interactive shell
+
+Run `pdfforensics` without arguments (or `pdfforensics shell`) to open a session that stays live for input:
+
+```text
+$ pdfforensics
+########################################################
+#                                                      #
+#               pdf-forensics-kit 0.4.0                #
+#  PDF & Office tampering analysis - local, read-only  #
+#                                                      #
+########################################################
+  Drag a file or folder here and press Enter, or type 'help'. 'exit' to leave.
+
+pdfforensics › ~/Downloads/invoice.pdf
+# Summary: invoice.pdf
+**invoice.pdf: significant-indicators - 1 finding(s) need attention (1 high).**
+- [HIGH] Revision 2 changes page content: removed: "Total: 100 SEK"; added: "Total: 900 SEK"
+...
+pdfforensics › findings medium
+invoice.pdf  significant-indicators
+  [HIGH] Revision 2 changes page content  (revisions.content-changed, confidence high)
+pdfforensics › extract ~/Downloads/invoice.pdf
+pdfforensics › exit
+```
+
+**Drag and drop a file or folder into the terminal and press Enter.** It is analysed right away, and paths
+with spaces work. Results are colour-coded by severity (set `NO_COLOR=1` to turn colour off). Tab completes
+commands and file paths, the arrow keys recall earlier commands (history is kept in
+`~/.pdfforensics_history`), and Ctrl-C interrupts a running analysis without leaving the shell.
+
+| Command | What it does |
+|---|---|
+| *`<path>`* | Analyse a dragged or typed file or folder and show the summary |
+| `analyze PATH...` (`a`) | Same, for several paths |
+| `report PATH` | Full report: every finding with its evidence |
+| `last [full]` | Show the previous result again |
+| `findings [LEVEL]` | Compact list of the previous analysis' findings at or above `info`/`low`/`medium`/`high`/`critical` |
+| `extract PDF [DIR]` | Recover every earlier revision of a PDF |
+| `compare A B` | Compare two PDFs |
+| `summarize JSON...` | Rebuild summaries from saved reports |
+| `set outdir DIR\|off` | Also save JSON, report and summary files for every analysis in `DIR` |
+| `set external on\|off` | Use Poppler `pdfsig` as a second signature validator (default on) |
+| `set online on\|off` | Allow `pdfsig` to contact OCSP servers (network access, default off) |
+| `set recursive on\|off` | Include sub-folders (default on) |
+| `status` | Session settings and available validators |
+| `help [COMMAND]`, `clear`, `exit` / `quit` / Ctrl-D | |
+
+The shell also reads commands from a pipe, e.g. `printf 'analyze a.pdf\nexit\n' | pdfforensics`.
 
 ---
 
