@@ -12,7 +12,10 @@
 4. **No network, no execution.** Nothing is uploaded. Macros, JavaScript, DDE fields, embedded files
    and external links are never executed or fetched. `pdfsig` runs with `-no-ocsp` unless
    `--online-revocation` is given explicitly.
-5. **Report provenance.** Every report records the SHA-256, size, UTC time and the versions of every
+5. **Reports next to evidence only on request.** The optional `<document>.forensics-report.md` is written
+   to the document's folder only after an explicit yes (or `--save-report`). It never overwrites anything,
+   and the document itself is never opened for writing.
+6. **Report provenance.** Every report records the SHA-256, size, UTC time and the versions of every
    library and external tool used. Report files are named `<file>.<sha256 prefix>.*`, so same-named files
    from different folders never overwrite each other.
 

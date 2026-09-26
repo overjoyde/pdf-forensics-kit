@@ -120,7 +120,7 @@ def banner(colour: bool = False, unicode: bool | None = None, status: list[tuple
     │   █▀█ █▀▄ █▀▀   █▀▀ █▀█ █▀█ █▀▀ █▄ █ █▀ █ █▀▀ █▀        │
     │   █▀▀ █▄▀ █▀    █▀  █▄█ █▀▄ ██▄ █ ▀█ ▄█ █ █▄▄ ▄█  kit   │
     │                                                         │
-    │   pdf-forensics-kit · PDF & Office tampering    v0.5.0  │
+    │   pdf-forensics-kit · PDF & Office tampering    v0.6.0  │
     │   ● local   ● read-only   ● no uploads                  │
     │                                                         │
     ╰─────────────────────────────────────────────────────────╯
@@ -264,6 +264,8 @@ class ForensicsShell(cmd.Cmd):
         self.external = True
         self.online = False
         self.recursive = True
+        self.save_mode = "ask"            # ask | always | never: save a Markdown report next to the document
+        self.interactive = sys.stdin.isatty()
         self.last: list[dict] = []
         self.last_failures: list[dict] = []
 
@@ -305,7 +307,9 @@ class ForensicsShell(cmd.Cmd):
         return [("pyHanko signatures", HAVE_PYHANKO),
                 ("pdfsig", bool(find_pdfsig()) and self.external),
                 ("offline" if not self.online else "ONLINE revocation", not self.online),
-                (f"saving to {self.outdir}" if self.outdir else "screen only", True)]
+                (f"saving to {self.outdir}" if self.outdir else "screen only", True),
+                ({"ask": "ask to save report", "always": "auto-save report",
+                  "never": "no report files"}[self.save_mode], self.save_mode != "never")]
 
     def _split(self, line: str) -> list[str] | None:
         try:
@@ -364,6 +368,44 @@ class ForensicsShell(cmd.Cmd):
                 (self.outdir / "batch-summary.md").write_text(render.batch_markdown(reports, failures),
                                                               encoding="utf-8")
             self.ok(f"reports saved in {self.outdir}")
+        self._offer_report(reports, failures)
+
+    def _offer_report(self, reports: list[dict], failures: list[dict]) -> None:
+        """After an analysis: ask (yes/no) whether to save a Markdown report next to each document."""
+        from pdfforensics.savereport import ask_yes_no, save_reports
+
+        if not reports or self.save_mode == "never":
+            return
+        if self.save_mode == "ask":
+            if not self.interactive:
+                return
+            if len(reports) == 1:
+                where = Path(reports[0]["file"]["path"]).parent
+                question = f"Save the report as Markdown in {where}?"
+            else:
+                question = f"Save {len(reports)} reports as Markdown next to the documents (+ a batch report)?"
+            if not ask_yes_no("? " + question):  # plain text: libedit misplaces colour codes in input prompts
+                self.out(_c("  not saved (type 'save' to save it later)", "2", self.colour))
+                return
+        written, errors = save_reports(reports, failures)
+        for p in written:
+            self.ok(f"report saved: {p}")
+        for e in errors:
+            self.err(e)
+
+    def do_save(self, line: str) -> None:
+        """save
+    Save the report(s) of the previous analysis as Markdown next to the document(s)."""
+        from pdfforensics.savereport import save_reports
+
+        if not self.last:
+            self.err("nothing analysed yet in this session")
+            return
+        written, errors = save_reports(self.last, self.last_failures)
+        for p in written:
+            self.ok(f"report saved: {p}")
+        for e in errors:
+            self.err(e)
 
     # -------------------------------------------------------------- lifecycle
     def preloop(self) -> None:
@@ -527,10 +569,13 @@ class ForensicsShell(cmd.Cmd):
         """set outdir DIR|off     save JSON/Markdown/summary files for every analysis in DIR
     set external on|off     use Poppler pdfsig as a second signature validator (default on)
     set online on|off       allow pdfsig to contact OCSP servers - NETWORK ACCESS (default off)
-    set recursive on|off    include sub-folders when analysing a folder (default on)"""
+    set recursive on|off    include sub-folders when analysing a folder (default on)
+    set save ask|always|never  after each analysis: ask to save a Markdown report next to the
+                               document (default), always save it, or never ask"""
         args = self._split(line)
         if not args or len(args) != 2:
-            self.err("usage: set outdir DIR|off | set external on|off | set online on|off | set recursive on|off")
+            self.err("usage: set outdir DIR|off | set external on|off | set online on|off | "
+                     "set recursive on|off | set save ask|always|never")
             return
         key, val = args[0].lower(), args[1]
         flag = val.lower() in ("on", "yes", "true", "1")
@@ -549,6 +594,16 @@ class ForensicsShell(cmd.Cmd):
         elif key == "recursive":
             self.recursive = flag
             self.ok(f"recursive folders: {'on' if flag else 'off'}")
+        elif key == "save":
+            mode = {"ask": "ask", "always": "always", "on": "always", "yes": "always",
+                    "never": "never", "off": "never", "no": "never"}.get(val.lower())
+            if not mode:
+                self.err("usage: set save ask|always|never")
+                return
+            self.save_mode = mode
+            self.ok({"ask": "after each analysis: ask whether to save a Markdown report next to the document",
+                     "always": "after each analysis: always save a Markdown report next to the document",
+                     "never": "after each analysis: do not save or ask"}[mode])
         else:
             self.err(f"unknown setting: {key}")
 
@@ -562,6 +617,8 @@ class ForensicsShell(cmd.Cmd):
             ("version", __version__),
             ("output folder", str(self.outdir) if self.outdir else "off (screen only)"),
             ("recursive folders", "on" if self.recursive else "off"),
+            ("save report", {"ask": "ask after each analysis", "always": "always, next to the document",
+                             "never": "never"}[self.save_mode]),
             ("pyHanko signatures", "available" if HAVE_PYHANKO else "not installed"),
             ("pdfsig (Poppler)", ("available" if find_pdfsig() else "not installed")
              + ("" if self.external else ", disabled")),
@@ -597,7 +654,8 @@ class ForensicsShell(cmd.Cmd):
             ("extract PDF [DIR]", "recover every earlier revision of a PDF as separate files"),
             ("compare A B", "compare two PDFs (metadata, production, text)"),
             ("summarize JSON...", "rebuild summaries from saved JSON reports"),
-            ("set KEY VALUE", "outdir DIR|off, external on|off, online on|off, recursive on|off"),
+            ("save", "save the last report(s) as Markdown next to the document(s)"),
+            ("set KEY VALUE", "save ask|always|never, outdir DIR|off, external/online/recursive on|off"),
             ("status", "session settings and available validators"),
             ("clear", "clear the screen"),
             ("exit", "leave (also: quit, q, Ctrl-D)"),
@@ -638,9 +696,11 @@ class ForensicsShell(cmd.Cmd):
     def complete_set(self, text: str, line: str, *_: Any) -> list[str]:
         parts = line.split()
         if len(parts) <= 1 or (len(parts) == 2 and not line.endswith(" ")):
-            return [k for k in ("outdir", "external", "online", "recursive") if k.startswith(text)]
+            return [k for k in ("save", "outdir", "external", "online", "recursive") if k.startswith(text)]
         if parts[1] == "outdir":
             return self._complete_path(text)
+        if parts[1] == "save":
+            return [v for v in ("ask", "always", "never") if v.startswith(text)]
         return [v for v in ("on", "off") if v.startswith(text)]
 
 

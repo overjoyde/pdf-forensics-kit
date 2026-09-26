@@ -23,9 +23,12 @@ description: Analyse local PDF and Office (DOCX/XLSX/PPTX) documents for tamperi
 2. Analyse and write reports next to the case, not next to the evidence:
 
    ```bash
-   pdfforensics analyze "/abs/path/file-or-folder" -r --out-dir "/abs/path/case-reports"
+   pdfforensics analyze "/abs/path/file-or-folder" -r --out-dir "/abs/path/case-reports" --no-prompt
    ```
 
+   Always pass `--no-prompt` in agent runs: an interactive terminal would otherwise ask whether to
+   save a report next to the evidence. Only use `--save-report` (which writes
+   `<document>.forensics-report.md` in the document's folder) if the user asks for it.
    Add `--no-external-tools` to skip Poppler `pdfsig`. Never add `--online-revocation` unless the user
    explicitly allows network access.
 3. Read `<file>.<hash>.summary.md` first, then the JSON (`*.forensics.json`) for evidence.

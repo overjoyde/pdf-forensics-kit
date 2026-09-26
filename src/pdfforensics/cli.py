@@ -89,6 +89,7 @@ def cmd_analyze(a: argparse.Namespace) -> int:
         _write(a.markdown, md)
     if a.summary:
         _write(a.summary, _summary_doc(reports, failures))
+    _maybe_save_reports(a, reports, failures)
     if not (a.json or a.markdown or a.out_dir or a.summary):
         if len(reports) == 1 and not failures:
             print(report_md(reports[0], a))
@@ -101,6 +102,29 @@ def cmd_analyze(a: argparse.Namespace) -> int:
         if any(LEVELS[r["verdict"]["level"]] >= threshold for r in reports):
             return 1
     return 0
+
+
+def _maybe_save_reports(a: argparse.Namespace, reports: list[dict], failures: list[dict]) -> None:
+    """--save-report saves without asking. In an interactive terminal, ask yes/no after the analysis
+    (unless --no-prompt, or machine-readable output is going to stdout)."""
+    from pdfforensics.savereport import ask_yes_no, save_reports
+
+    if not reports:
+        return
+    if not a.save_report:
+        to_stdout = "-" in (a.json, a.markdown)
+        if a.no_prompt or to_stdout or not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return
+        n = len(reports)
+        question = ("Save the report as Markdown next to the document?" if n == 1
+                    else f"Save {n} reports as Markdown next to the documents (+ a batch report)?")
+        if not ask_yes_no(question):
+            return
+    written, errors = save_reports(reports, failures)
+    for p in written:
+        print(f"report saved: {p}", file=sys.stderr)
+    for e in errors:
+        print(f"error: {e}", file=sys.stderr)
 
 
 def report_md(r: dict, a: argparse.Namespace) -> str:
@@ -203,6 +227,10 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--summary", nargs="?", const="-", metavar="FILE",
                     help="write a plain-language summary when the analysis is done (stdout if FILE omitted)")
     an.add_argument("--hide-info", action="store_true", help="omit info-level findings from Markdown")
+    an.add_argument("--save-report", action="store_true",
+                    help="save a Markdown report next to each analysed document, without asking")
+    an.add_argument("--no-prompt", action="store_true",
+                    help="never ask whether to save a report (for scripts)")
     an.add_argument("--fail-on", choices=list(LEVELS), help="exit 1 if any verdict is at or above this level")
     an.set_defaults(func=cmd_analyze)
 

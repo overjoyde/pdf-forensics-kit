@@ -1,6 +1,6 @@
 """pdf-forensics-kit: explainable, signature-aware PDF tampering and provenance analysis."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from pdfforensics.engine import analyze_file  # noqa: E402
 

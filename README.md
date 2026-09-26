@@ -147,6 +147,7 @@ its SHA-256**. Same-named files from different folders therefore never overwrite
 
 | File | For whom | Content |
 |---|---|---|
+| `invoice.pdf.forensics-report.md` (next to the document) | Everyone | Written when you answer **yes** after an analysis, or with `--save-report`: the full report in Markdown, in the document's own folder |
 | `invoice.pdf.4f716821876d.summary.md` | Case handlers, managers | One-page plain-language summary: headline, document profile, key findings with their evidence, what was ruled out, next steps, limitations |
 | `invoice.pdf.4f716821876d.forensics.md` | Reviewers | Full report: file identity and hash, tool versions, summary, then every finding with explanation, evidence and benign explanations, and the verdict rule |
 | `invoice.pdf.4f716821876d.forensics.json` | Systems, archiving, re-analysis | Everything, machine-readable (see below) |
@@ -249,6 +250,9 @@ pdfforensics
 # One file: full Markdown report in the terminal
 pdfforensics analyze invoice.pdf
 
+# Save the report as Markdown next to the document (asked interactively, or without asking:)
+pdfforensics analyze ~/Case/invoice.pdf --summary --save-report     # -> ~/Case/invoice.pdf.forensics-report.md
+
 # Just the plain-language summary (terminal, or write it to a file)
 pdfforensics analyze invoice.pdf --summary
 pdfforensics analyze offer.docx --summary offer-summary.md
@@ -276,6 +280,8 @@ pdfforensics analyze ./inbox --json - --fail-on high
 | `--json FILE` / `--markdown FILE` | Write the JSON or Markdown report (`-` for stdout) |
 | `--summary [FILE]` | Output only the plain-language summary |
 | `--hide-info` | Leave info-level findings out of the Markdown |
+| `--save-report` | Save `<document>.forensics-report.md` next to each document without asking |
+| `--no-prompt` | Never ask whether to save a report (for scripts). In a terminal, `analyze` otherwise asks after the analysis |
 | `--fail-on LEVEL` | Exit with 1 if any verdict is at or above `low`/`medium`/`high`/`critical` |
 | `--password PW` | User password for encrypted PDFs |
 | `--no-external-tools` | Do not run Poppler `pdfsig`, even if installed |
@@ -302,7 +308,21 @@ the 256-colour palette. It falls back to plain ASCII if the terminal can't show 
 with `NO_COLOR=1` or when output is piped.
 
 **Drag and drop a file or folder into the terminal and press Enter.** It is analysed right away, and paths
-with spaces work. Tab completes
+with spaces work.
+
+**Save the report when the analysis is done.** After every analysis the shell asks:
+
+```text
+? Save the report as Markdown in /Users/you/Case 42? [y/N] y
+✓ report saved: /Users/you/Case 42/invoice.pdf.forensics-report.md
+```
+
+The report is always a Markdown file, saved **in the same folder as the document**, named
+`<document>.forensics-report.md`. It contains the full report: verdict, file hash, summary and every finding
+with its evidence. Enter or `n` saves nothing, and `save` saves the last analysis later. An existing report
+is never overwritten (a timestamp is added instead), and the document itself is never modified. For a folder,
+each document gets its report next to it, plus a `forensics-batch-report-<time>.md` in the common folder.
+`set save always` saves without asking, and `set save never` stops the question. Tab completes
 commands and file paths, the arrow keys recall earlier commands (history is kept in
 `~/.pdfforensics_history`), and Ctrl-C interrupts a running analysis without leaving the shell.
 
@@ -316,6 +336,8 @@ commands and file paths, the arrow keys recall earlier commands (history is kept
 | `extract PDF [DIR]` | Recover every earlier revision of a PDF |
 | `compare A B` | Compare two PDFs |
 | `summarize JSON...` | Rebuild summaries from saved reports |
+| `save` | Save the last report(s) as Markdown next to the document(s) |
+| `set save ask\|always\|never` | After each analysis: ask to save the report (default), always save it, or never |
 | `set outdir DIR\|off` | Also save JSON, report and summary files for every analysis in `DIR` |
 | `set external on\|off` | Use Poppler `pdfsig` as a second signature validator (default on) |
 | `set online on\|off` | Allow `pdfsig` to contact OCSP servers (network access, default off) |
@@ -360,6 +382,8 @@ Never report `no-indicators` as "authentic" or "not tampered". It means the chec
 
 ## Safety and privacy
 
+- **The document is never modified.** The only file ever written next to it is the Markdown report you
+  explicitly confirm (or request with `--save-report` / `set save always`), and existing reports are never overwritten.
 - **Read-only, captured once.** The file is read once without following symbolic links, then hashed and
   analysed from those bytes. A file that changes while it is read is rejected, and a file that changes
   during analysis is reported.
