@@ -1,5 +1,8 @@
 import io
+import os
 import sys
+
+import pytest
 
 import officegen as og
 import pdfgen
@@ -38,6 +41,7 @@ def test_path_named_like_a_command_is_still_a_file(tmp_path, capsys, monkeypatch
     assert "report.pdf: no-indicators" in capsys.readouterr().out
 
 
+@pytest.mark.skipif(os.name == "nt", reason="backslash-escaped drag-and-drop is a POSIX terminal convention")
 def test_drag_and_drop_escaped_spaces(tmp_path, capsys):
     d = tmp_path / "Case files"
     d.mkdir()
@@ -46,12 +50,30 @@ def test_drag_and_drop_escaped_spaces(tmp_path, capsys):
     assert "my offer.docx: no-indicators" in capsys.readouterr().out
 
 
+def test_quoted_and_unquoted_paths_with_spaces(tmp_path, capsys):
+    d = tmp_path / "Case files"
+    d.mkdir()
+    f = d / "my offer.docx"
+    f.write_bytes(og.build("docx"))
+    sh = ForensicsShell(colour=False)
+    sh.onecmd(f'"{f}"')       # quoted drop (Windows Terminal, iTerm option)
+    sh.onecmd(str(f))         # typed without quotes
+    sh.onecmd(f'analyze "{f}"')
+    assert capsys.readouterr().out.count("my offer.docx: no-indicators") == 3
+
+
+def test_split_args_windows_paths(monkeypatch):
+    from pdfforensics import repl
+    monkeypatch.setattr(repl.os, "name", "nt")
+    assert repl.split_args(r'compare C:\a\x.pdf "C:\My Docs\y.pdf"') == ["compare", r"C:\a\x.pdf", r"C:\My Docs\y.pdf"]
+
+
 def test_session_flow_outdir_last_findings(tmp_path, capsys):
     p = tmp_path / "a.pdf"
     p.write_bytes(_tampered())
     sh = ForensicsShell(colour=False)
-    sh.onecmd(f"set outdir {tmp_path / 'reports'}")
-    sh.onecmd(f"analyze {p}")
+    sh.onecmd(f'set outdir "{tmp_path / "reports"}"')
+    sh.onecmd(f'analyze "{p}"')
     assert len(list((tmp_path / "reports").glob("a.pdf.*.summary.md"))) == 1
     capsys.readouterr()
     sh.onecmd("findings high")
@@ -67,19 +89,19 @@ def test_report_extract_compare(tmp_path, capsys):
     p = tmp_path / "inv.pdf"
     p.write_bytes(_tampered())
     sh = ForensicsShell(colour=False)
-    sh.onecmd(f"report {p}")
+    sh.onecmd(f'report "{p}"')
     assert "## Findings" in capsys.readouterr().out
-    sh.onecmd(f"extract {p} {tmp_path / 'revs'}")
+    sh.onecmd(f'extract "{p}" "{tmp_path / "revs"}"')
     revs = sorted((tmp_path / "revs").iterdir())
     assert len(revs) == 2
     capsys.readouterr()
-    sh.onecmd(f"compare {revs[0]} {p}")
+    sh.onecmd(f'compare "{revs[0]}" "{p}"')
     assert "900 SEK" in capsys.readouterr().out
 
 
 def test_errors_do_not_leave_the_shell(tmp_path, capsys):
     sh = ForensicsShell(colour=False)
-    for line in ("frobnicate", "compare onlyone", f"compare {tmp_path}/nope.pdf {tmp_path}/nope2.pdf",
+    for line in ("frobnicate", "compare onlyone", f'compare "{tmp_path / "nope.pdf"}" "{tmp_path / "nope2.pdf"}"',
                  "set online maybe-later", "findings bogus", "set colour red", "analyze", "last"):
         assert not sh.onecmd(line), line   # a falsy return keeps the shell running
     out = capsys.readouterr().out
@@ -109,7 +131,7 @@ def test_exit_and_help(capsys):
 def test_no_arguments_starts_shell_with_piped_commands(tmp_path, capsys, monkeypatch):
     p = tmp_path / "x.pdf"
     p.write_bytes(pdfgen.build())
-    monkeypatch.setattr(sys, "stdin", io.StringIO(f"analyze {p}\nexit\n"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(f'analyze "{p}"\nexit\n'))
     assert main([]) == 0
     out = capsys.readouterr().out
     assert "x.pdf: no-indicators" in out and "bye" in out

@@ -25,6 +25,24 @@ VERDICT_COLOURS = {"strong-indicators": "1;97;41", "significant-indicators": "1;
                    "review-recommended": "1;33", "minor-anomalies": "36", "no-indicators": "1;32"}
 
 
+def split_args(line: str) -> list[str]:
+    """Split a command line into arguments.
+
+    POSIX shells (macOS, Linux) drag-and-drop paths with backslash-escaped spaces, which shlex
+    handles. On Windows, backslashes are path separators, so quotes are the only grouping.
+    """
+    if os.name == "nt":
+        parts = shlex.split(line, posix=False)
+        return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
+    return shlex.split(line)
+
+
+def whole_line_path(line: str) -> str | None:
+    """The entire input as one existing path (unquoted paths with spaces, quoted drops)."""
+    cand = os.path.expanduser(line.strip().strip("\"'"))
+    return cand if cand and Path(cand).exists() else None
+
+
 # ------------------------------------------------------------------------------------ banner
 
 def banner(width: int = 46) -> str:
@@ -115,7 +133,7 @@ class ForensicsShell(cmd.Cmd):
 
     def _split(self, line: str) -> list[str] | None:
         try:
-            return shlex.split(line)
+            return split_args(line)
         except ValueError as exc:
             self.err(f"could not parse input: {exc}")
             return None
@@ -201,14 +219,18 @@ class ForensicsShell(cmd.Cmd):
     def onecmd(self, line: str) -> bool:
         # Existing paths win over command names (a file called 'report.pdf' is a file, not 'report').
         stripped = line.strip()
-        try:
-            if stripped and stripped.split()[0] not in ("help", "?"):
-                args = shlex.split(stripped)
-                if args and all(Path(os.path.expanduser(a)).exists() for a in args):
-                    self._analyse([os.path.expanduser(a) for a in args], full=False)
-                    return False
-        except ValueError:
-            pass
+        if stripped and stripped.split()[0] not in ("help", "?"):
+            whole = whole_line_path(stripped)
+            if whole:
+                self._analyse([whole], full=False)
+                return False
+            try:
+                args = split_args(stripped)
+            except ValueError:
+                args = []
+            if args and all(Path(os.path.expanduser(a)).exists() for a in args):
+                self._analyse([os.path.expanduser(a) for a in args], full=False)
+                return False
         try:
             return super().onecmd(line)
         except KeyboardInterrupt:
