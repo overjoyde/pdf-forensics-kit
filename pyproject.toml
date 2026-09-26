@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 signatures = ["pyhanko>=0.25"]  # MIT, cryptographic signature validation
+report = ["reportlab>=4.0"]     # BSD, PDF report output (--pdf-report)
 dev = ["pytest>=8.0"]
 
 [project.scripts]

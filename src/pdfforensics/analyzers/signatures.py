@@ -142,6 +142,19 @@ def _pyhanko_validate(data: bytes, password: str = "") -> list[dict[str, Any]]:
                 "signer": signer,
                 "summary": st.summary() if hasattr(st, "summary") else "",
             })
+            try:
+                br = [int(x) for x in emb.byte_range]
+                r["signed_end"] = br[2] + br[3]
+            except Exception:
+                pass
+            reported = getattr(st, "signer_reported_dt", None)
+            if reported is not None:
+                r["signer_reported_time"] = reported.isoformat()
+            tsv = getattr(st, "timestamp_validity", None)
+            if tsv is not None and getattr(tsv, "timestamp", None) is not None:
+                r["signature_timestamp_time"] = tsv.timestamp.isoformat()
+            if r.get("kind") == "document-timestamp" and getattr(st, "timestamp", None) is not None:
+                r["timestamp_time"] = st.timestamp.isoformat()
         except Exception as exc:
             r["error"] = f"{type(exc).__name__}: {exc}"
         results.append(r)
