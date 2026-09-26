@@ -20,6 +20,7 @@ from pdfforensics.pdfutil import get, iso, name, parse_pdf_date, s
 try:  # optional dependency
     from pyhanko.pdf_utils.reader import PdfFileReader
     from pyhanko.sign.validation import validate_pdf_signature
+    from pyhanko_certvalidator import ValidationContext
 
     HAVE_PYHANKO = True
     logging.getLogger("pyhanko").setLevel(logging.ERROR)
@@ -82,7 +83,10 @@ def _pyhanko_validate(data: bytes) -> list[dict[str, Any]]:
     for emb in reader.embedded_signatures:
         r: dict[str, Any] = {"field": getattr(emb, "field_name", None)}
         try:
-            st = validate_pdf_signature(emb)
+            # No trust anchors on purpose: this checks integrity, not signer trust. Without an explicit
+            # list pyHanko falls back to the OS TLS roots, which is deprecated and not a document-signing
+            # trust source anyway. Trust is reported by pdfsig against its own store.
+            st = validate_pdf_signature(emb, signer_validation_context=ValidationContext(trust_roots=[]))
             try:
                 signer = st.signing_cert.subject.human_friendly
             except Exception:
