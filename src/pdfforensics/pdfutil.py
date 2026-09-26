@@ -91,11 +91,15 @@ _MAX_EXPANSION = {"/ASCIIHexDecode": 1, "/AHx": 1, "/ASCII85Decode": 1, "/A85": 
                   "/RunLengthDecode": 128, "/RL": 128, "/LZWDecode": 4096, "/LZW": 4096,
                   "/FlateDecode": 1032, "/Fl": 1032}
 _CHUNK = 1 << 16
-MAX_DECODED_STREAM_BYTES = 64 * 1024 * 1024   # largest stream an analyser decodes in full
+MAX_FILTERS = 8                                # longer filter chains are not decoded
+MAX_DECODED_STREAM_BYTES = 64 * 1024 * 1024    # largest stream an analyser decodes in full
+# Other filter chains are handed to qpdf, which decodes them at once. They are only decoded when
+# their worst case fits this ceiling; the real size is then checked against the caller's limit.
+QPDF_DECODE_CEILING = 256 * 1024 * 1024
 
 
 class StreamTooLarge(ValueError):
-    """The stream could decode to more than the allowed size, so it was not decoded."""
+    """The stream decodes, or could decode, to more than can be handled safely."""
 
 
 def _filters(stream: pikepdf.Stream) -> tuple[list[str], bool]:
@@ -112,26 +116,55 @@ def _filters(stream: pikepdf.Stream) -> tuple[list[str], bool]:
     return names, predictor
 
 
+def _salvage(d: Any, data: bytes, room: int, keep: bool, out: list[bytes]) -> int:
+    """After a zlib error, re-feed the failed window byte by byte to keep the output before the bad byte."""
+    produced = 0
+    for i in range(len(data)):
+        if produced > room or d.eof:
+            break
+        buf = data[i:i + 1]
+        try:
+            while buf or not d.eof:
+                chunk = d.decompress(buf, min(_CHUNK, room + 1 - produced))
+                buf = d.unconsumed_tail
+                if not chunk:
+                    break
+                produced += len(chunk)
+                if keep:
+                    out.append(chunk)
+                if produced > room:
+                    break
+        except zlib.error:
+            break
+    return produced
+
+
 def _inflate(data: bytes, limit: int, keep: bool = True) -> tuple[bytes, int]:
     """Inflate ``data``, producing at most ``limit + 1`` bytes. Returns (output if keep, bytes produced).
 
-    Corrupt input stops decoding and keeps what was produced, as qpdf does.
+    Like qpdf, corrupt input keeps everything decoded before the error; an unreadable zlib header
+    raises ValueError, as qpdf does.
     """
     d = zlib.decompressobj()
     out: list[bytes] = []
     produced = 0
     buf = data
-    try:
-        while produced <= limit and not d.eof:
+    while produced <= limit and not d.eof:
+        snapshot = d.copy()
+        try:
             chunk = d.decompress(buf, min(_CHUNK, limit + 1 - produced))
-            buf = d.unconsumed_tail
-            if not chunk and not buf:
-                break
-            produced += len(chunk)
-            if keep:
-                out.append(chunk)
-    except zlib.error:
-        pass
+        except zlib.error as exc:
+            salvaged = _salvage(snapshot, buf, limit - produced, keep, out)
+            if produced == 0 and salvaged == 0:
+                raise ValueError(f"invalid Flate data: {exc}") from exc
+            produced += salvaged
+            break
+        buf = d.unconsumed_tail
+        if not chunk and not buf:
+            break
+        produced += len(chunk)
+        if keep:
+            out.append(chunk)
     return b"".join(out), produced
 
 
@@ -139,24 +172,33 @@ def _flate_only(names: list[str], predictor: bool) -> bool:
     return bool(names) and not predictor and all(n in _FLATE for n in names)
 
 
-def _worst_case_size(stream: pikepdf.Stream, names: list[str], limit: int) -> int:
+def _worst_case_size(stream: pikepdf.Stream, names: list[str]) -> int:
     raw = stream.read_raw_bytes()
     size = len(raw)
     for i, n in enumerate(names):
         if i == 0 and n in _FLATE:
-            size = _inflate(raw, limit, keep=False)[1]
+            size = _inflate(raw, QPDF_DECODE_CEILING, keep=False)[1]
         else:
             size *= _MAX_EXPANSION.get(n, 1)
     return size
 
 
-def read_stream(stream: pikepdf.Stream, limit: int) -> tuple[bytes, bool]:
-    """Decoded stream data, never decoding more than ``limit`` bytes. Returns (data, truncated).
+def _qpdf_decode(stream: pikepdf.Stream, names: list[str]) -> bytes:
+    if _worst_case_size(stream, names) > QPDF_DECODE_CEILING:
+        raise StreamTooLarge("filter chain could expand beyond the safe decoding ceiling")
+    return stream.read_bytes()
 
-    Unfiltered and Flate-only streams are decoded incrementally and cut at ``limit``. Other filter
-    chains are decoded by qpdf only if their worst case fits; otherwise StreamTooLarge is raised.
+
+def read_stream(stream: pikepdf.Stream, limit: int) -> tuple[bytes, bool]:
+    """Decoded stream data, cut at ``limit`` bytes. Returns (data, truncated).
+
+    Unfiltered and Flate-only streams are decoded incrementally and never beyond ``limit``. Other
+    filter chains are decoded by qpdf when their worst case fits QPDF_DECODE_CEILING; otherwise, or
+    for chains longer than MAX_FILTERS, StreamTooLarge is raised.
     """
     names, predictor = _filters(stream)
+    if len(names) > MAX_FILTERS:
+        raise StreamTooLarge(f"{len(names)} filters in one stream")
     if not names:
         raw = stream.read_raw_bytes()
         return raw[:limit], len(raw) > limit
@@ -166,26 +208,30 @@ def read_stream(stream: pikepdf.Stream, limit: int) -> tuple[bytes, bool]:
             data, produced = _inflate(data, limit)
             truncated = truncated or produced > limit
         return data[:limit], truncated
-    if _worst_case_size(stream, names, limit) > limit:
-        raise StreamTooLarge(f"stream may decode to more than {limit} bytes")
-    data = stream.read_bytes()
+    data = _qpdf_decode(stream, names)
     return data[:limit], len(data) > limit
 
 
-def stream_fits(stream: pikepdf.Stream, limit: int) -> bool:
-    """Whether the stream decodes to at most ``limit`` bytes, without keeping the decoded data."""
+def decoded_size(stream: pikepdf.Stream, cap: int) -> int | None:
+    """The stream's decoded size if it is at most ``cap`` bytes, else None. Keeps no decoded data."""
     names, predictor = _filters(stream)
-    if not names:
-        return len(stream.read_raw_bytes()) <= limit
-    if _flate_only(names, predictor):
-        data = stream.read_raw_bytes()
-        for i, _ in enumerate(names):
-            last = i == len(names) - 1
-            data, produced = _inflate(data, limit, keep=not last)
-            if produced > limit:
-                return False
-        return True
-    return _worst_case_size(stream, names, limit) <= limit
+    if len(names) > MAX_FILTERS:
+        return None
+    try:
+        if not names:
+            size = len(stream.read_raw_bytes())
+        elif _flate_only(names, predictor):
+            data, size = stream.read_raw_bytes(), 0
+            for i, _ in enumerate(names):
+                last = i == len(names) - 1
+                data, size = _inflate(data, cap, keep=not last)
+                if size > cap:
+                    return None
+        else:
+            size = len(_qpdf_decode(stream, names))
+    except StreamTooLarge:
+        return None
+    return size if size <= cap else None
 
 
 # --------------------------------------------------------------------------- dates

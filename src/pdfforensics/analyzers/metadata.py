@@ -151,7 +151,7 @@ def analyze(doc: Document) -> AnalyzerResult:
         res.facts["xmp_error"] = xmp_err
     if xmp_err == XMP_TOO_LARGE:
         res.findings.append(Finding(
-            id="analysis.stream-too-large", title="XMP metadata stream too large to decode; not analysed",
+            id="metadata.xmp-too-large", title="XMP metadata stream too large to decode; not analysed",
             severity=Severity.LOW, confidence=Confidence.HIGH, category="metadata",
             explanation=("The XMP stream decodes to more than 2 MB, so it was not decoded and XMP dates and history "
                          "were not checked. Real XMP packets are a few kilobytes; a very large one can be padding "

@@ -233,6 +233,8 @@ def _limitations(r: dict[str, Any]) -> list[str]:
     ids = {f["id"] for f in r["findings"]}
     if "signature.not-validated" in ids:
         out.append("Some signatures could not be verified cryptographically.")
+    if ids & {"metadata.xmp-too-large", "structure.stream-too-large", "content.stream-too-large"}:
+        out.append("Some streams exceeded the decoding limits and were not analysed in full.")
     if "analysis.objects-truncated" in ids or r.get("facts", {}).get("content", {}).get("pages_truncated"):
         out.append("Very large document: some objects or pages were outside the configured scan limits.")
     if r.get("facts", {}).get("revisions", {}).get("revisions_skipped"):

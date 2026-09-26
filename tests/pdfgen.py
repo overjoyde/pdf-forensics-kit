@@ -137,6 +137,42 @@ def flate_bomb_obj(mib: int, extra: bytes = b"") -> bytes:
     return (b"<< /Length %d /Filter /FlateDecode " % len(comp)) + extra + b" >>\nstream\n" + comp + b"\nendstream"
 
 
+def lzw_encode(data: bytes) -> bytes:
+    """PDF LZWDecode encoding (EarlyChange 1), for fixtures of older files."""
+    table = {bytes([i]): i for i in range(256)}
+    nxt, width, acc, nbits, out = 258, 9, 0, 0, bytearray()
+
+    def emit(code: int) -> None:
+        nonlocal acc, nbits
+        acc, nbits = (acc << width) | code, nbits + width
+        while nbits >= 8:
+            nbits -= 8
+            out.append((acc >> nbits) & 0xFF)
+
+    emit(256)
+    w = b""
+    for c in data:
+        wc = w + bytes([c])
+        if wc in table:
+            w = wc
+            continue
+        emit(table[w])
+        table[wc] = nxt
+        nxt += 1
+        if nxt + 1 > (1 << width) and width < 12:
+            width += 1
+        if nxt >= 4094:
+            emit(256)
+            table, nxt, width = {bytes([i]): i for i in range(256)}, 258, 9
+        w = bytes([c])
+    if w:
+        emit(table[w])
+    emit(257)
+    if nbits:
+        out.append((acc << (8 - nbits)) & 0xFF)
+    return bytes(out)
+
+
 def with_metadata_stream(data: bytes, body: bytes) -> bytes:
     """Point the catalog's /Metadata at a new stream object with the given body."""
     with pikepdf.open(io.BytesIO(data)) as pdf:

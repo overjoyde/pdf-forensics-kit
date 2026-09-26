@@ -390,7 +390,7 @@ Never report `no-indicators` as "authentic" or "not tampered". It means the chec
 - **Offline.** No uploads and no telemetry. `pdfsig` runs with `-no-ocsp` unless you pass `--online-revocation`.
 - **Nothing is executed or fetched.** Macros, JavaScript, DDE fields, embedded files and external links are only inspected.
 - **Hostile-file hardening.** Size limits, bounded ZIP/XML parsing, bounded PDF stream decoding (XMP 2 MB,
-  other streams 64 MB, reported as `analysis.stream-too-large`), XML entity declarations refused, and
+  page content 64 MB per page and 256 MB per document, other streams 64 MB; reported as `*.stream-too-large` / `metadata.xmp-too-large`), XML entity declarations refused, and
   external tools given a private temporary copy with no shell.
 - **Reports are sensitive.** They quote metadata and changed text, so give them the same classification
   and handling as the documents themselves.

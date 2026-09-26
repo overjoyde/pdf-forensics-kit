@@ -8,7 +8,7 @@ import pikepdf
 
 from pdfforensics.document import Document
 from pdfforensics.model import AnalyzerResult, Confidence, Finding, Severity
-from pdfforensics.pdfutil import MAX_DECODED_STREAM_BYTES, StreamTooLarge, _walk, get, name, read_stream, stream_fits
+from pdfforensics.pdfutil import MAX_DECODED_STREAM_BYTES, StreamTooLarge, _walk, decoded_size, get, name, read_stream
 
 SKIP_TYPES = {"/ObjStm", "/XRef"}
 _OBJ_AT = re.compile(rb"\s*(\d+)\s+(\d+)\s+obj")
@@ -26,7 +26,7 @@ def _is_content_bearing(obj: pikepdf.Object, kind: str, oversize: list[pikepdf.O
     if isinstance(obj, pikepdf.Stream) and name(get(obj, "/Subtype")) in ("", "/Form"):
         try:
             data, truncated = read_stream(obj, 262144)
-            if truncated and oversize is not None and not stream_fits(obj, MAX_DECODED_STREAM_BYTES):
+            if truncated and oversize is not None and decoded_size(obj, MAX_DECODED_STREAM_BYTES) is None:
                 oversize.append(obj)
         except StreamTooLarge:
             if oversize is not None:
@@ -145,9 +145,9 @@ def analyze(doc: Document) -> AnalyzerResult:
                 benign_explanations=["Many generators leave unused fonts/resources behind"]))
         if oversize:
             res.findings.append(Finding(
-                id="analysis.stream-too-large",
+                id="structure.stream-too-large",
                 title=f"{len(oversize)} unreferenced stream(s) decode to more than "
-                      f"{MAX_DECODED_STREAM_BYTES // (1024 * 1024)} MB",
+                      f"{MAX_DECODED_STREAM_BYTES // (1024 * 1024)} MB or could not be decoded safely",
                 severity=Severity.LOW, confidence=Confidence.HIGH, category="structure",
                 explanation=("These streams were only sampled, not decoded in full. An unreferenced stream that "
                              "expands this much is a decompression-bomb pattern."),
